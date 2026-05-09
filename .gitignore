@@ -1,0 +1,191 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Database / local storage
+# =========================
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+data/sqlite/
+data/local/
+data/tmp/
+
+# =========================
+# Scraping data
+# =========================
+data/raw/
+data/cache/
+data/snapshots/
+data/exports/
+data/html/
+data/debug/
+data/network/
+data/screenshots/
+
+# Keep directory structure if needed
+!data/.gitkeep
+!data/raw/.gitkeep
+!data/cache/.gitkeep
+!data/snapshots/.gitkeep
+!data/exports/.gitkeep
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+*.log.*
+log/
+
+# =========================
+# Test / coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.cache/
+
+# =========================
+# Type checking / linting
+# =========================
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# =========================
+# Jupyter / notebooks
+# =========================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# =========================
+# Playwright / browser artifacts
+# =========================
+playwright-report/
+test-results/
+.browser/
+ms-playwright/
+.playwright/
+
+# =========================
+# Scrapy artifacts, if ever used
+# =========================
+.scrapy/
+
+# =========================
+# IDE / editors
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# =========================
+# OS / filesystem
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# =========================
+# Temporary files
+# =========================
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+
+# =========================
+# Secrets / credentials
+# =========================
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials.json
+service-account.json
+railway.json
+
+# =========================
+# Generated reports / local outputs
+# =========================
+reports/
+outputs/
+exports/
+*.csv
+*.parquet
+*.xlsx
+
+# Keep examples if needed
+!examples/
+!examples/**/*.csv
+!examples/**/*.json
+
+# =========================
+# Docker / local overrides
+# =========================
+docker-compose.override.yml
+
+# =========================
+# Project-specific safe keeps
+# =========================
+!.gitkeep
+!README.md
+!docs/**/*.md
+!sql/**/*.sql
