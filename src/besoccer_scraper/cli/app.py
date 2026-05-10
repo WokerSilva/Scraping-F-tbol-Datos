@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     scrape_match.add_argument("--url", required=True)
     scrape_match.add_argument("--competition-slug", required=True)
     scrape_match.add_argument("--round-label", default=None)
+    scrape_match.add_argument("--target-id", type=int, default=None)
     scrape_match.add_argument("--debug-html", action="store_true", default=False)
     scrape_pending = scrape_sub.add_parser("pending-matches")
     scrape_pending.set_defaults(scrape_mode="pending-matches")

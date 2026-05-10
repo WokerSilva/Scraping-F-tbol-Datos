@@ -8,6 +8,7 @@ def run_scrape(container: object, args: object) -> int:
             competition_slug=args.competition_slug,
             round_label=args.round_label,
             debug_html=args.debug_html,
+            target_id=args.target_id,
         )
     if args.scrape_mode == "pending-matches":
         return container.scrape_use_case.execute_pending_matches(

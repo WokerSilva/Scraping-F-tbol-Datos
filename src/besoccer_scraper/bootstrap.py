@@ -89,6 +89,8 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         http_client=http_client,
         parser=match_parser,
         request_policy=request_policy,
+        save_raw_pages=settings.save_raw_pages,
+        max_target_attempts=max(1, settings.max_retries),
     )
     audit_use_case = AuditRunUseCase(uow=uow)
     audit_coverage_use_case = AuditCoverageUseCase(uow=uow)
