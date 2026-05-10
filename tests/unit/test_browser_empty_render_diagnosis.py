@@ -40,10 +40,21 @@ def test_browser_empty_render_diagnosis(tmp_path: Path, monkeypatch) -> None:
     page = _Page()
 
     assert renderer._is_empty_render(page) is True
-    meta_path = renderer._save_debug(page=page, competition="clausura_mexico", year=2026, requested_url="https://example.test", response=None, network_events=[])
+    meta_path = renderer._save_debug(
+        page=page,
+        competition="clausura_mexico",
+        year=2026,
+        requested_url="https://example.test",
+        response=None,
+        network_events=[],
+        blocked_external_navigation_count=0,
+        blocked_domains=[],
+    )
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     assert meta["html_length"] > 0
     assert meta["body_text_length"] == 0
+    assert meta["blocked_external_navigation_count"] == 0
+    assert meta["blocked_domains"] == []
 
     message = f"Rendered page is empty. Debug snapshot: {meta_path}"
     assert "Rendered page is empty" in message
