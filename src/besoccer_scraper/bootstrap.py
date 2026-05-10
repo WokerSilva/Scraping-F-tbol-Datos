@@ -11,6 +11,7 @@ from besoccer_scraper.config.settings import Settings, load_settings, require_da
 from besoccer_scraper.domain.policies import RequestPolicy, RetryPolicy
 from besoccer_scraper.domain.repositories import DiscoverySeasonTargetRepository, PendingBatchTargetRepository, ScrapeMatchTargetRepository
 from besoccer_scraper.infrastructure.db.connection import DatabaseFactories, build_database_factories, with_ssl_mode
+from besoccer_scraper.infrastructure.browser.fallback import BrowserCompetitionRenderer
 from besoccer_scraper.infrastructure.db.repositories import PostgresUnitOfWork
 from besoccer_scraper.infrastructure.http.client import HttpClient
 from besoccer_scraper.infrastructure.parsers.competition_parser import CompetitionParser
@@ -78,6 +79,8 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         team_use_case=discover_mx_team_use_case,
         competition_parser=competition_parser,
         http_client=http_client,
+        browser_renderer=BrowserCompetitionRenderer(wait_after_load_ms=settings.browser_wait_after_load_ms),
+        use_browser_fallback=settings.use_browser_fallback,
     )
 
     discovery_season_repo: DiscoverySeasonTargetRepository = uow.scrape_targets

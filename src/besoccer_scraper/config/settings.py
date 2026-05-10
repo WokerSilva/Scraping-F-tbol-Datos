@@ -26,6 +26,7 @@ class Settings:
     request_delay_min_seconds: float
     request_delay_max_seconds: float
     use_browser_fallback: bool
+    browser_wait_after_load_ms: int
     save_raw_pages: bool
     cache_enabled: bool
     active_leagues: tuple[str, ...]
@@ -96,12 +97,13 @@ def load_settings(cli_args: Namespace | None = None, *, env_file: str = ".env") 
         app_env=str(pick("app_env", "APP_ENV", "dev")),
         log_level=str(pick("log_level", "LOG_LEVEL", "INFO")).upper(),
         request_timeout_seconds=_as_int(pick("request_timeout_seconds", "REQUEST_TIMEOUT_SECONDS", 30), 30),
-        user_agent=str(pick("user_agent", "USER_AGENT", "Mozilla/5.0 (compatible; besoccer-scraper/0.1)")),
+        user_agent=str(pick("user_agent", "USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")),
         max_retries=_as_int(pick("max_retries", "MAX_RETRIES", 3), 3),
         dry_run=_as_bool(pick("dry_run", "DRY_RUN", False), False),
         request_delay_min_seconds=float(pick("request_delay_min_seconds", "REQUEST_DELAY_MIN_SECONDS", 0.0) or 0.0),
         request_delay_max_seconds=float(pick("request_delay_max_seconds", "REQUEST_DELAY_MAX_SECONDS", 0.0) or 0.0),
-        use_browser_fallback=_as_bool(pick("use_browser_fallback", "USE_BROWSER_FALLBACK", False), False),
+        use_browser_fallback=_as_bool(pick("use_browser_fallback", "USE_BROWSER_FALLBACK", True), True),
+        browser_wait_after_load_ms=_as_int(pick("browser_wait_after_load_ms", "BROWSER_WAIT_AFTER_LOAD_MS", 1200), 1200),
         save_raw_pages=_as_bool(pick("save_raw_pages", "SAVE_RAW_PAGES", False), False),
         cache_enabled=_as_bool(pick("cache_enabled", "CACHE_ENABLED", False), False),
         active_leagues=_split_csv(str(pick("active_leagues", "ACTIVE_LEAGUES", ""))),
