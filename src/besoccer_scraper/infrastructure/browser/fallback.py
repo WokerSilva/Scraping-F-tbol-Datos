@@ -22,20 +22,20 @@ class BrowserCompetitionRenderer:
         'select[name="season"][data-cy="roundSelect"]',
     )
 
-    def render_round_pages(
+    def discover_rounds(
         self,
         *,
         url: str,
         competition: str | None = None,
         year: int | None = None,
-    ) -> list[tuple[str, str]]:
+    ) -> list[dict[str, object]]:
         try:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except Exception as exc:
             raise HttpFetchError("Playwright browser fallback is unavailable") from exc
 
-        pages: list[tuple[str, str]] = []
+        round_results: list[dict[str, object]] = []
         network_events: list[dict[str, Any]] = []
         blocked_external_navigation_count = 0
         blocked_domains_seen: list[str] = []
@@ -99,7 +99,18 @@ class BrowserCompetitionRenderer:
                     continue
             has_anchors = page.locator('a[href*="/partido/"]').count() > 0
             if not select_selector and has_anchors:
-                return [("JORNADA_ACTUAL", page.content())]
+                dom = page.evaluate(
+                    """() => {
+                        const anchors = Array.from(document.querySelectorAll('a[href*="/partido/"]'));
+                        const matches = anchors.map((a) => {
+                            const href = a.getAttribute('href') || '';
+                            const id = href.split('/').filter(Boolean).pop() || '';
+                            return {url: href, source_match_id: id, scope_hint: 'main'};
+                        });
+                        return {matches, diagnostics: {match_anchor_count_global: anchors.length, match_anchor_count_scoped: anchors.length, scope_found: false}};
+                    }"""
+                )
+                return [{"round_label": "JORNADA_ACTUAL", "matches": dom.get("matches", []), "diagnostics": dom.get("diagnostics", {})}]
             if not select_selector:
                 debug = self._save_debug(page=page, competition=competition, year=year, requested_url=url, response=response, network_events=network_events, blocked_external_navigation_count=blocked_external_navigation_count, blocked_domains=blocked_domains_seen)
                 body_len = len(self._body_text(page))
@@ -115,14 +126,35 @@ class BrowserCompetitionRenderer:
                 self._set_round_via_js(page=page, selector=select_selector, value=value, index=idx)
                 page.wait_for_timeout(self.wait_after_load_ms)
                 page.wait_for_selector('a[href*="/partido/"]', state="attached", timeout=5_000)
-                pages.append((label, page.content()))
+                dom = page.evaluate(
+                    """() => {
+                        const scope = document.querySelector('#mod_mainCompetitionRounds') || document.querySelector('.comp-matches') || document.querySelector('.panel-body.match-list-new') || document.querySelector('main');
+                        const globalAnchors = Array.from(document.querySelectorAll('a[href*="/partido/"]'));
+                        const scopedAnchors = scope ? Array.from(scope.querySelectorAll('a[href*="/partido/"]')) : [];
+                        const matches = [];
+                        const seen = new Set();
+                        for (const a of scopedAnchors) {
+                            const href = a.getAttribute('href') || '';
+                            const id = href.split('/').filter(Boolean).pop() || '';
+                            if (!href || seen.has(id)) continue;
+                            seen.add(id);
+                            matches.push({url: href, source_match_id: id, scope_hint: '#mod_mainCompetitionRounds'});
+                        }
+                        return {matches, diagnostics: {match_anchor_count_global: globalAnchors.length, match_anchor_count_scoped: scopedAnchors.length, scope_found: Boolean(scope)}};
+                    }"""
+                )
+                round_results.append({"round_label": label, "matches": dom.get("matches", []), "diagnostics": dom.get("diagnostics", {})})
 
             context.close()
             browser.close()
 
-        if not pages:
+        if not round_results:
             raise HttpFetchError("Browser fallback could not extract round pages", url=url)
-        return pages
+        return round_results
+
+    def render_round_pages(self, *, url: str, competition: str | None = None, year: int | None = None) -> list[tuple[str, str]]:
+        rounds = self.discover_rounds(url=url, competition=competition, year=year)
+        return [(str(r.get("round_label", "JORNADA")), "") for r in rounds]
 
     def _save_debug(self, *, page: object, competition: str | None, year: int | None, requested_url: str, response: object | None, network_events: list[dict[str, Any]], blocked_external_navigation_count: int, blocked_domains: list[str], external_navigation_events: list[str] | None = None) -> str:
         base = Path("data/snapshots/errors")

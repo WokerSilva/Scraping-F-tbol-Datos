@@ -148,3 +148,30 @@ class InspectMatchUseCase:
             "stats_summary": {"total_metrics": len(stats), "keys": sorted(stats.keys())[:10]},
             "goals": goals,
         }
+
+
+@dataclass
+class InspectTargetsUseCase:
+    uow: UnitOfWork
+
+    def execute(self, *, competition: str, year: int) -> dict[str, Any]:
+        season_key = build_season_key(competition, year)
+        coverage = self.uow.scrape_targets.coverage_by_competition_season(competition=competition, season_key=season_key)
+        round_rows = self.uow.session.execute(
+            text("""
+                SELECT COALESCE(round_label, 'unknown') AS round_label, COUNT(*)::BIGINT AS total
+                FROM scrape_targets
+                WHERE source_name = 'besoccer' AND source_competition_slug = :competition AND season_key = :season_key
+                GROUP BY 1 ORDER BY 1
+            """),
+            {"competition": competition, "season_key": season_key},
+        ).mappings()
+        recent = self.uow.scrape_targets.list_recent_by_competition_season(competition=competition, season_key=season_key, limit=10)
+        return {
+            "competition": competition,
+            "season_key": season_key,
+            "targets_total": int(coverage.get("targets_total", 0) or 0),
+            "status_breakdown": {k: int(coverage.get(k, 0) or 0) for k in ("pending", "in_progress", "parsed", "retry_scheduled", "blocked", "failed_permanent")},
+            "round_label_counts": {str(r["round_label"]): int(r["total"]) for r in round_rows},
+            "recent": [dict(r) for r in recent],
+        }
