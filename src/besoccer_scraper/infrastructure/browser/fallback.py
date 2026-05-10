@@ -18,7 +18,13 @@ class BrowserCompetitionRenderer:
         'select[onchange*="jsonMatches"]',
     )
 
-    def render_round_pages(self, *, url: str, competition: str = "mx", year: int = 0) -> list[tuple[str, str]]:
+    def render_round_pages(
+        self,
+        *,
+        url: str,
+        competition: str | None = None,
+        year: int | None = None,
+    ) -> list[tuple[str, str]]:
         try:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
@@ -78,10 +84,12 @@ class BrowserCompetitionRenderer:
             raise HttpFetchError("Browser fallback could not extract round pages", url=url)
         return pages
 
-    def _save_debug(self, *, page: object, competition: str, year: int) -> str:
+    def _save_debug(self, *, page: object, competition: str | None, year: int | None) -> str:
         base = Path("data/snapshots/errors")
         base.mkdir(parents=True, exist_ok=True)
-        stem = f"mx_season_{competition}_{year}_failed"
+        safe_competition = competition or "unknown_competition"
+        safe_year = year if year is not None else "unknown_year"
+        stem = f"mx_season_{safe_competition}_{safe_year}_failed"
         html_path = base / f"{stem}.html"
         png_path = base / f"{stem}.png"
         meta_path = base / f"{stem}_meta.json"
