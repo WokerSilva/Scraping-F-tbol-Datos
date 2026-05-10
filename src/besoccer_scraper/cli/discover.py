@@ -32,6 +32,8 @@ def run_discover(container: object, args: object) -> int:
                 browser=args.browser,
                 fallback_to_teams=(args.fallback_teams if args.fallback_teams is not None else (not dry_run)),
                 debug=getattr(args, "debug", False),
+                sample_size=getattr(args, "sample_size", 3),
+                allow_partial=getattr(args, "allow_partial", False),
             )
         except ScrapeBlockedError as exc:
             if exc.status_code == 406:
