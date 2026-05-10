@@ -16,6 +16,7 @@ except Exception:
 @dataclass(frozen=True)
 class Settings:
     database_url: str
+    database_source: str
     app_env: str
     log_level: str
     request_timeout_seconds: int
@@ -74,11 +75,24 @@ def load_settings(cli_args: Namespace | None = None, *, env_file: str = ".env") 
             return cli[cli_key]
         return os.getenv(env_key, default)
 
-    raw_db_url = pick("database_url", "DATABASE_URL") or pick("database_url", "BESOCCER_DATABASE_URL")
+    cli_database_url = cli.get("database_url")
+    if cli_database_url is not None:
+        raw_db_url = cli_database_url
+        database_source = "cli"
+    else:
+        env_database_url = os.getenv("DATABASE_URL")
+        if env_database_url:
+            raw_db_url = env_database_url
+            database_source = "env:DATABASE_URL"
+        else:
+            alt_env_database_url = os.getenv("BESOCCER_DATABASE_URL")
+            raw_db_url = alt_env_database_url
+            database_source = "env:BESOCCER_DATABASE_URL" if alt_env_database_url else "unset"
     database_url = _normalize_database_url(str(raw_db_url)) if raw_db_url else ""
 
     return Settings(
         database_url=database_url,
+        database_source=database_source,
         app_env=str(pick("app_env", "APP_ENV", "dev")),
         log_level=str(pick("log_level", "LOG_LEVEL", "INFO")).upper(),
         request_timeout_seconds=_as_int(pick("request_timeout_seconds", "REQUEST_TIMEOUT_SECONDS", 30), 30),

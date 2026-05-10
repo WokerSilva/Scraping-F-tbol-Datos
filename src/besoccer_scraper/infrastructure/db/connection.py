@@ -38,6 +38,30 @@ def mask_database_url(database_url: str) -> str:
     return urlunsplit((parts.scheme, f"{user}:***@{host}", parts.path, parts.query, parts.fragment))
 
 
+def mask_host(host: str) -> str:
+    if not host:
+        return ""
+    labels = host.split(".")
+    first = labels[0]
+    if len(first) <= 2:
+        first_masked = "*" * len(first)
+    else:
+        first_masked = f"{first[:2]}***"
+    labels[0] = first_masked
+    return ".".join(labels)
+
+
+def sanitize_database_dsn(database_url: str) -> dict[str, str]:
+    parts = urlsplit(database_url)
+    host = parts.hostname or ""
+    provider = parts.scheme.split("+", 1)[0] if parts.scheme else ""
+    return {
+        "provider": provider,
+        "database": parts.path.lstrip("/"),
+        "host_masked": mask_host(host),
+    }
+
+
 def build_database_factories(database_url: str) -> DatabaseFactories:
     normalized_url = normalize_database_url(database_url)
     engine = create_engine(normalized_url, future=True, pool_pre_ping=True)
