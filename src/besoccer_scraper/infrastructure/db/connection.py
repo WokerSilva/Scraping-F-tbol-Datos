@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -14,19 +15,33 @@ class DatabaseFactories:
 
 
 def normalize_database_url(database_url: str) -> str:
-    """Normalize SQLAlchemy URL for psycopg driver."""
     if database_url.startswith("postgresql://") and "+psycopg" not in database_url:
         return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
     return database_url
 
 
+def with_ssl_mode(database_url: str, ssl_mode: str) -> str:
+    if not ssl_mode:
+        return database_url
+    parts = urlsplit(database_url)
+    q = dict(parse_qsl(parts.query, keep_blank_values=True))
+    q.setdefault("sslmode", ssl_mode)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
+
+
+def mask_database_url(database_url: str) -> str:
+    parts = urlsplit(database_url)
+    if "@" not in parts.netloc:
+        return database_url
+    creds, host = parts.netloc.rsplit("@", 1)
+    user = creds.split(":", 1)[0]
+    return urlunsplit((parts.scheme, f"{user}:***@{host}", parts.path, parts.query, parts.fragment))
+
+
 def build_database_factories(database_url: str) -> DatabaseFactories:
     normalized_url = normalize_database_url(database_url)
     engine = create_engine(normalized_url, future=True, pool_pre_ping=True)
-    return DatabaseFactories(
-        engine=engine,
-        session_factory=sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True),
-    )
+    return DatabaseFactories(engine=engine, session_factory=sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True))
 
 
 def database_healthcheck(engine: Engine) -> bool:

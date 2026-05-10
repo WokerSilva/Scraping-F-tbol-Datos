@@ -5,6 +5,8 @@ LEAGUE_CATALOG: dict[str, dict[str, object]] = {
         "competition_slug": "clausura_mexico",
         "display_name": "Liga MX Clausura",
         "country": "Mexico",
+        "discovery_strategy": "team_matches_filter",
+        "season_policy": "short_tournament_year",
         "split_tournament": {
             "enabled": True,
             "phase": "clausura",
@@ -35,6 +37,8 @@ LEAGUE_CATALOG: dict[str, dict[str, object]] = {
         "competition_slug": "apertura_mexico",
         "display_name": "Liga MX Apertura",
         "country": "Mexico",
+        "discovery_strategy": "team_matches_filter",
+        "season_policy": "short_tournament_year",
         "split_tournament": {
             "enabled": True,
             "phase": "apertura",
