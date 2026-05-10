@@ -1,13 +1,7 @@
 from __future__ import annotations
 
 import argparse
-
-from besoccer_scraper.bootstrap import build_container
-from besoccer_scraper.cli.audit import run_audit_coverage, run_audit_message
-from besoccer_scraper.cli.db import run_db_command
-from besoccer_scraper.cli.discover import run_discover
-from besoccer_scraper.cli.pipeline import run_pipeline
-from besoccer_scraper.cli.scrape import run_scrape
+import sys
 
 
 ALIASES = {"db-check": ["db", "check"], "db-migrate": ["db", "migrate"], "db-status": ["db", "status"]}
@@ -91,23 +85,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> object:
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ALIASES:
         argv = ALIASES[argv[0]] + argv[1:]
     args = parser.parse_args(argv)
+
+    from besoccer_scraper.bootstrap import build_container
+
     container = build_container(args)
 
     if args.command == "db":
+        from besoccer_scraper.cli.db import run_db_command
+
         return run_db_command(container, args.action)
     if args.command == "discover":
+        from besoccer_scraper.cli.discover import run_discover
+
         return run_discover(container, args)
     if args.command == "scrape":
+        from besoccer_scraper.cli.scrape import run_scrape
+
         return run_scrape(container, args)
     if args.command == "audit":
+        from besoccer_scraper.cli.audit import run_audit_coverage, run_audit_message
+
         if args.audit_mode == "message":
             return run_audit_message(container, args.message)
         if args.audit_mode == "coverage":
             return run_audit_coverage(container, competition=args.competition, season_key=args.season_key)
         raise ValueError(f"Unknown audit mode: {args.audit_mode}")
     if args.command == "pipeline":
+        from besoccer_scraper.cli.pipeline import run_pipeline
+
         return run_pipeline(container, args.discover_url, args.competition_id, args.scrape_url)
     raise ValueError(f"Unknown command: {args.command}")
