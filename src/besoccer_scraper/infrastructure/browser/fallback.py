@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import json
 import time
 
 from besoccer_scraper.shared.exceptions import HttpFetchError
@@ -9,8 +11,14 @@ from besoccer_scraper.shared.exceptions import HttpFetchError
 @dataclass
 class BrowserCompetitionRenderer:
     wait_after_load_ms: int = 1200
+    round_selectors: tuple[str, ...] = (
+        'select[data-cy="roundSelect"]',
+        '.select-desktop select[onchange*="jsonMatches"]',
+        '.select-mobile select[onchange*="jsonMatches"]',
+        'select[onchange*="jsonMatches"]',
+    )
 
-    def render_round_pages(self, *, url: str) -> list[tuple[str, str]]:
+    def render_round_pages(self, *, url: str, competition: str = "mx", year: int = 0) -> list[tuple[str, str]]:
         try:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
@@ -24,12 +32,22 @@ class BrowserCompetitionRenderer:
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded")
             self._dismiss_cookies(page)
-            try:
-                page.wait_for_selector('select[data-cy="roundSelect"]', timeout=8_000)
-            except PlaywrightTimeoutError as exc:
-                raise HttpFetchError("Round selector not found in rendered competition page", url=url) from exc
+            select_selector = None
+            for selector in self.round_selectors:
+                try:
+                    page.wait_for_selector(selector, state="attached", timeout=2_500)
+                    select_selector = selector
+                    break
+                except PlaywrightTimeoutError:
+                    continue
+            has_anchors = page.locator('a[href*="/partido/"]').count() > 0
+            if not select_selector and has_anchors:
+                return [("JORNADA_ACTUAL", page.content())]
+            if not select_selector:
+                debug = self._save_debug(page=page, competition=competition, year=year)
+                raise HttpFetchError(f"Round selector not found. Debug snapshot: {debug}", url=url)
 
-            select = page.locator('select[data-cy="roundSelect"]')
+            select = page.locator(select_selector)
             options = select.locator("option")
             count = options.count()
             for idx in range(count):
@@ -47,9 +65,10 @@ class BrowserCompetitionRenderer:
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                         }""",
-                        ['select[data-cy="roundSelect"]', idx],
+                        [select_selector, idx],
                     )
                 page.wait_for_timeout(self.wait_after_load_ms)
+                page.wait_for_selector('a[href*="/partido/"]', state="attached", timeout=5_000)
                 pages.append((label, page.content()))
 
             context.close()
@@ -58,6 +77,19 @@ class BrowserCompetitionRenderer:
         if not pages:
             raise HttpFetchError("Browser fallback could not extract round pages", url=url)
         return pages
+
+    def _save_debug(self, *, page: object, competition: str, year: int) -> str:
+        base = Path("data/snapshots/errors")
+        base.mkdir(parents=True, exist_ok=True)
+        stem = f"mx_season_{competition}_{year}_failed"
+        html_path = base / f"{stem}.html"
+        png_path = base / f"{stem}.png"
+        meta_path = base / f"{stem}_meta.json"
+        html_path.write_text(page.content(), encoding="utf-8")
+        page.screenshot(path=str(png_path), full_page=True)
+        body_text = page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+        meta_path.write_text(json.dumps({"title": page.title(), "url": page.url, "body_text_head": body_text[:1000]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(meta_path)
 
     @staticmethod
     def _dismiss_cookies(page: object) -> None:

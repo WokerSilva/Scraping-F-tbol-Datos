@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     db = sub.add_parser("db")
-    db.add_argument("action", choices=["check", "migrate", "status"], default="status", nargs="?")
+    db.add_argument("action", choices=["check", "migrate", "status", "schema"], default="status", nargs="?")
 
     discover = sub.add_parser("discover")
     discover_sub = discover.add_subparsers(dest="discover_mode")
