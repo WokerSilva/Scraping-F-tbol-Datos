@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from typing import Any
 
 from besoccer_scraper.domain.enums import TargetStatus
@@ -16,6 +17,8 @@ class ScrapeMatchesUseCase:
     http_client: object
     parser: object
     request_policy: RequestPolicy
+    save_raw_pages: bool = False
+    max_target_attempts: int = 3
 
     def execute(self, competition_id: str, source_url: str) -> int:
         html = self.http_client.get(source_url)
@@ -31,19 +34,22 @@ class ScrapeMatchesUseCase:
         season_key: str | None = None,
         limit: int = 20,
         debug_html: bool = False,
-    ) -> int:
+    ) -> dict[str, Any]:
         targets = self._select_targets(limit=limit)
-        parsed_total = 0
+        counters = {"parsed": 0, "retry_scheduled": 0, "blocked": 0, "failed_permanent": 0, "skipped_lock": 0}
+        run_id = self.uow.job_runs.start_run(job_name="scrape.pending-matches")
         for target in targets:
             target_id = target.get("id")
             target_url = str(target.get("url") or target.get("source_url") or "")
             target_competition = str(target.get("competition_slug") or competition_slug or "unknown")
-            self._mark_target(target_id, TargetStatus.IN_PROGRESS)
+            if not self._mark_target(target_id, TargetStatus.IN_PROGRESS):
+                counters["skipped_lock"] += 1
+                continue
             try:
                 html = self.http_client.get(target_url)
                 if debug_html:
                     print(html[:1000])
-                self._save_raw_page(target_url, html)
+                self._save_raw_page(target_url, html, enabled=self._is_raw_enabled())
                 parsed_match = self.parser.parse_match(
                     html,
                     url=target_url,
@@ -53,11 +59,17 @@ class ScrapeMatchesUseCase:
                 )
                 self.uow.matches.upsert_many([parsed_match])
                 self._mark_target(target_id, TargetStatus.PARSED)
-                parsed_total += 1
+                counters["parsed"] += 1
+                self.uow.job_runs.log_event(run_id=run_id, event_type="target_parsed", payload={"target_id": target_id, "url": target_url})
             except Exception as exc:  # noqa: BLE001
-                self._mark_target(target_id, TargetStatus.FAILED_PERMANENT, error=str(exc))
+                status = self._classify_target_failure(target=target, error=str(exc))
+                self._mark_target(target_id, status, error=str(exc))
+                counters[status.value] += 1
+                self.uow.job_runs.log_event(run_id=run_id, event_type="target_failed", payload={"target_id": target_id, "status": status.value, "error": str(exc)})
+        self.uow.job_runs.finish_run(run_id=run_id, status="success", stats=counters)
+        print(f"pending-matches summary: total={len(targets)} parsed={counters['parsed']} retry_scheduled={counters['retry_scheduled']} blocked={counters['blocked']} failed_permanent={counters['failed_permanent']} skipped_lock={counters['skipped_lock']}")
         self.uow.commit()
-        return parsed_total
+        return counters
 
     def execute_match_url(
         self,
@@ -66,11 +78,13 @@ class ScrapeMatchesUseCase:
         competition_slug: str,
         round_label: str | None = None,
         debug_html: bool = False,
-    ) -> int:
+        target_id: int | None = None,
+    ) -> dict[str, Any]:
+        run_id = self.uow.job_runs.start_run(job_name="scrape.match")
         html = self.http_client.get(url)
         if debug_html:
             print(html[:1000])
-        self._save_raw_page(url, html)
+        self._save_raw_page(url, html, enabled=self._is_raw_enabled())
         parsed_match = self.parser.parse_match(
             html,
             url=url,
@@ -78,57 +92,70 @@ class ScrapeMatchesUseCase:
             round_label=round_label,
         )
         self.uow.matches.upsert_many([parsed_match])
+        if target_id is not None:
+            self._mark_target(target_id, TargetStatus.PARSED)
+        payload = parsed_match.payload
+        stats_count = len(payload.get("stats_json") or {})
+        events_count = len(payload.get("events_json") or [])
+        summary = {
+            "source_match_id": payload.get("source_match_id"),
+            "competition": payload.get("competition_slug"),
+            "round": payload.get("round_label"),
+            "score": (payload.get("metadata") or {}).get("score"),
+            "stats_count": stats_count,
+            "events_count": events_count,
+        }
+        self.uow.job_runs.log_event(run_id=run_id, event_type="match_parsed", payload=summary)
+        self.uow.job_runs.finish_run(run_id=run_id, status="success", stats=summary)
+        print(f"match summary: source_match_id={summary['source_match_id']} competition={summary['competition']} round={summary['round']} score={summary['score']} stats_count={stats_count} events_count={events_count}")
         self.uow.commit()
-        return 1
+        return summary
 
     def _select_targets(self, *, limit: int) -> list[dict[str, Any]]:
         repository: PendingBatchTargetRepository = self.uow.scrape_targets
         return list(repository.list_for_processing(limit=limit))
 
-    def _mark_target(self, target_id: Any, status: TargetStatus, error: str | None = None) -> None:
+    def _mark_target(self, target_id: Any, status: TargetStatus, error: str | None = None) -> bool:
         repository: ScrapeMatchTargetRepository = self.uow.scrape_targets
         target_int = int(target_id)
         if status == TargetStatus.IN_PROGRESS:
-            repository.mark_transition(
+            return repository.mark_transition(
                 target_id=target_int,
                 from_statuses=("pending", "discovered", "retry_scheduled"),
                 to_status="in_progress",
             )
-            return
         if status == TargetStatus.PARSED:
-            repository.mark_transition(
+            return repository.mark_transition(
                 target_id=target_int,
                 from_statuses=("in_progress",),
                 to_status="parsed",
             )
-            return
         if status == TargetStatus.BLOCKED:
-            repository.mark_transition(
+            return repository.mark_transition(
                 target_id=target_int,
                 from_statuses=("in_progress",),
                 to_status="blocked",
                 error=error,
             )
-            return
         if status == TargetStatus.RETRY_SCHEDULED:
-            repository.mark_transition(
+            return repository.mark_transition(
                 target_id=target_int,
                 from_statuses=("in_progress",),
                 to_status="retry_scheduled",
                 error=error,
             )
-            return
         if status == TargetStatus.FAILED_PERMANENT:
-            repository.mark_transition(
+            return repository.mark_transition(
                 target_id=target_int,
                 from_statuses=("in_progress",),
                 to_status="failed_permanent",
                 error=error or "unknown error",
             )
-            return
         raise ValueError(f"Unsupported target status transition to {status.value}")
 
-    def _save_raw_page(self, url: str, html: str) -> None:
+    def _save_raw_page(self, url: str, html: str, *, enabled: bool) -> None:
+        if not enabled:
+            return
         payload = {
             "source_name": "besoccer",
             "url": url,
@@ -145,3 +172,15 @@ class ScrapeMatchesUseCase:
             status_code=payload["status_code"],
             metadata={"fetched_at": payload["fetched_at"].isoformat()},
         )
+
+    def _is_raw_enabled(self) -> bool:
+        return self.save_raw_pages or str(os.getenv("SAVE_RAW_PAGES", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _classify_target_failure(self, *, target: dict[str, Any], error: str) -> TargetStatus:
+        lowered = error.lower()
+        if any(token in lowered for token in ("403", "captcha", "challenge", "forbidden")):
+            return TargetStatus.BLOCKED
+        attempt = int((target.get("payload") or {}).get("attempt_count", 0)) + 1
+        if attempt >= self.max_target_attempts:
+            return TargetStatus.FAILED_PERMANENT
+        return TargetStatus.RETRY_SCHEDULED
