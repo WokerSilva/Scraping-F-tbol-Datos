@@ -39,6 +39,18 @@ class TargetRepository(Protocol):
     def count_by_competition_season(self, *, competition: str, season_key: str) -> int: ...
 
 
+class DiscoverySeasonTargetRepository(Protocol):
+    def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict) -> int: ...
+
+
+class ScrapeMatchTargetRepository(Protocol):
+    def mark_transition(self, *, target_id: int, from_statuses: tuple[str, ...], to_status: str, error: str | None = None) -> bool: ...
+
+
+class PendingBatchTargetRepository(Protocol):
+    def list_for_processing(self, *, limit: int) -> list[dict]: ...
+
+
 class RawPageRepository(Protocol):
     def save_raw_page(
         self,

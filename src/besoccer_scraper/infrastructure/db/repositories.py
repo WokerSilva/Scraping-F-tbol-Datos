@@ -170,17 +170,29 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
         ).one()
         return int(row[0])
 
-    def list_pending(self, *, limit: int) -> list[dict[str, Any]]:
+    def list_for_processing(self, *, limit: int) -> list[dict[str, Any]]:
         query = text(
             """
-            SELECT id, source_name, target_type, url, source_match_id, payload
+            SELECT
+                id,
+                source_name,
+                target_type,
+                url,
+                source_match_id,
+                payload,
+                COALESCE(payload ->> 'competition', payload ->> 'competition_slug') AS competition_slug,
+                payload ->> 'round_label' AS round_label,
+                COALESCE(payload ->> 'season_key', payload ->> 'season') AS season_key
             FROM scrape_targets
-            WHERE COALESCE(payload ->> 'status', 'pending') = 'pending'
+            WHERE COALESCE(payload ->> 'status', 'pending') IN ('pending', 'discovered', 'retry_scheduled')
             ORDER BY id
             LIMIT :limit
             """
         )
         return list(self.session.execute(query, {"limit": limit}).mappings())
+
+    def list_pending(self, *, limit: int) -> list[dict[str, Any]]:
+        return self.list_for_processing(limit=limit)
 
     def mark_in_progress(self, *, target_id: int) -> None:
         self._set_status(target_id=target_id, status="in_progress")
@@ -193,6 +205,29 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
 
     def mark_failed(self, *, target_id: int, error: str) -> None:
         self._set_status(target_id=target_id, status="failed", error=error)
+
+    def mark_transition(
+        self,
+        *,
+        target_id: int,
+        from_statuses: tuple[str, ...],
+        to_status: str,
+        error: str | None = None,
+    ) -> bool:
+        query = text(
+            """
+            UPDATE scrape_targets
+            SET payload = COALESCE(payload, '{}'::jsonb) ||
+                jsonb_build_object('status', :to_status, 'updated_at', NOW(), 'error', :error)
+            WHERE id = :target_id
+              AND COALESCE(payload ->> 'status', 'pending') = ANY(:from_statuses)
+            """
+        )
+        result = self.session.execute(
+            query,
+            {"target_id": target_id, "to_status": to_status, "error": error, "from_statuses": list(from_statuses)},
+        )
+        return result.rowcount > 0
 
     def count_by_status(self) -> dict[str, int]:
         query = text(
@@ -217,15 +252,12 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
         return int(row[0])
 
     def _set_status(self, *, target_id: int, status: str, error: str | None = None) -> None:
-        query = text(
-            """
-            UPDATE scrape_targets
-            SET payload = COALESCE(payload, '{}'::jsonb) ||
-                jsonb_build_object('status', :status, 'updated_at', NOW(), 'error', :error)
-            WHERE id = :target_id
-            """
+        self.mark_transition(
+            target_id=target_id,
+            from_statuses=("pending", "discovered", "in_progress", "retry_scheduled", "parsed", "blocked", "failed_permanent"),
+            to_status=status,
+            error=error,
         )
-        self.session.execute(query, {"target_id": target_id, "status": status, "error": error})
 
 
 class PostgresRawPageRepository(RawPagesRepository):
