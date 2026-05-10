@@ -9,7 +9,7 @@ from besoccer_scraper.application.pipeline import PipelineUseCase
 from besoccer_scraper.application.scraping import ScrapeMatchesUseCase
 from besoccer_scraper.config.settings import Settings, load_settings
 from besoccer_scraper.domain.policies import RequestPolicy, RetryPolicy
-from besoccer_scraper.infrastructure.db.connection import PostgresConnection
+from besoccer_scraper.infrastructure.db.connection import DatabaseFactories, build_database_factories
 from besoccer_scraper.infrastructure.db.repositories import PostgresUnitOfWork
 from besoccer_scraper.infrastructure.http.client import HttpClient
 from besoccer_scraper.infrastructure.parsers.competition_parser import CompetitionParser
@@ -19,7 +19,7 @@ from besoccer_scraper.infrastructure.parsers.team_matches_parser import TeamMatc
 @dataclass
 class Container:
     settings: Settings
-    db_connection: PostgresConnection
+    db: DatabaseFactories
     uow: PostgresUnitOfWork
     http_client: HttpClient
     competition_parser: CompetitionParser
@@ -35,9 +35,8 @@ class Container:
 def build_container(cli_args: Namespace | None = None) -> Container:
     settings = load_settings(cli_args)
 
-    db_connection = PostgresConnection(settings.database_url)
-    db_connection.connect()
-    uow = PostgresUnitOfWork()
+    db = build_database_factories(settings.database_url)
+    uow = PostgresUnitOfWork(session=db.session_factory())
 
     http_client = HttpClient(
         timeout_seconds=settings.http_timeout_seconds,
@@ -70,7 +69,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
 
     return Container(
         settings=settings,
-        db_connection=db_connection,
+        db=db,
         uow=uow,
         http_client=http_client,
         competition_parser=competition_parser,

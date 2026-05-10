@@ -1,48 +1,79 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
 
-from besoccer_scraper.domain.entities import Competition, Match, AuditEvent
-from besoccer_scraper.domain.repositories import UnitOfWork
-
-
-class InMemoryCompetitionRepository:
-    def __init__(self) -> None:
-        self.items: dict[str, Competition] = {}
-
-    def upsert_many(self, competitions: Iterable[Competition]) -> int:
-        count = 0
-        for c in competitions:
-            self.items[c.external_id] = c
-            count += 1
-        return count
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 
-class InMemoryMatchRepository:
-    def __init__(self) -> None:
-        self.items: dict[str, Match] = {}
+class BaseRepository:
+    table_name: str
 
-    def upsert_many(self, matches: Iterable[Match]) -> int:
-        count = 0
-        for m in matches:
-            self.items[m.external_id] = m
-            count += 1
-        return count
+    def __init__(self, session: Session) -> None:
+        self.session = session
 
-
-class InMemoryAuditRepository:
-    def __init__(self) -> None:
-        self.events: list[AuditEvent] = []
-
-    def append(self, event: AuditEvent) -> None:
-        self.events.append(event)
+    def insert(self, **values: Any) -> None:
+        columns = ", ".join(values.keys())
+        params = ", ".join(f":{k}" for k in values.keys())
+        self.session.execute(text(f"INSERT INTO {self.table_name} ({columns}) VALUES ({params})"), values)
 
 
-class PostgresUnitOfWork(UnitOfWork):
-    def __init__(self) -> None:
-        self.competitions = InMemoryCompetitionRepository()
-        self.matches = InMemoryMatchRepository()
-        self.audits = InMemoryAuditRepository()
+class SourcesRepository(BaseRepository):
+    table_name = "sources"
+
+
+class CompetitionsRepository(BaseRepository):
+    table_name = "competitions"
+
+
+class SeasonsRepository(BaseRepository):
+    table_name = "seasons"
+
+
+class TeamsRepository(BaseRepository):
+    table_name = "teams"
+
+
+class ScrapeTargetsRepository(BaseRepository):
+    table_name = "scrape_targets"
+
+
+class RawPagesRepository(BaseRepository):
+    table_name = "raw_pages"
+
+
+class MatchesRepository(BaseRepository):
+    table_name = "matches"
+
+
+class JobRunsRepository(BaseRepository):
+    table_name = "job_runs"
+
+
+class JobLogsRepository(BaseRepository):
+    table_name = "job_logs"
+
+
+class RunLocksRepository(BaseRepository):
+    table_name = "run_locks"
+
+
+@dataclass
+class PostgresUnitOfWork:
+    session: Session
+
+    def __post_init__(self) -> None:
+        self.sources = SourcesRepository(self.session)
+        self.competitions = CompetitionsRepository(self.session)
+        self.seasons = SeasonsRepository(self.session)
+        self.teams = TeamsRepository(self.session)
+        self.scrape_targets = ScrapeTargetsRepository(self.session)
+        self.raw_pages = RawPagesRepository(self.session)
+        self.matches = MatchesRepository(self.session)
+        self.job_runs = JobRunsRepository(self.session)
+        self.job_logs = JobLogsRepository(self.session)
+        self.run_locks = RunLocksRepository(self.session)
 
     def commit(self) -> None:
-        return None
+        self.session.commit()

@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("db")
+    db = sub.add_parser("db")
+    db.add_argument("action", choices=["check", "migrate", "status"], default="status", nargs="?")
 
     discover = sub.add_parser("discover")
     discover.add_argument("--source-url", required=True)
@@ -46,7 +47,7 @@ def main(argv: list[str] | None = None) -> object:
     container = build_container(args)
 
     if args.command == "db":
-        return run_db_command(container)
+        return run_db_command(container, args.action)
     if args.command == "discover":
         return run_discover(container, args.source_url)
     if args.command == "scrape":
