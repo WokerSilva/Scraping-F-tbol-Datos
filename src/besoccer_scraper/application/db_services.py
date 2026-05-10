@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy.engine import Engine
+from sqlalchemy import text
 
 from besoccer_scraper.infrastructure.db.connection import database_healthcheck, sanitize_database_dsn
 from besoccer_scraper.infrastructure.db.migrations import MigrationRunner
@@ -37,3 +38,22 @@ class DatabaseService:
             "select_1": select_1,
             "source": source,
         }
+
+    def schema_report(self) -> dict[str, list[str]]:
+        tables = ["scrape_targets", "raw_pages", "matches", "job_runs", "job_logs", "schema_migrations"]
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = ANY(:tables)
+                    ORDER BY table_name, ordinal_position
+                    """
+                ),
+                {"tables": tables},
+            ).mappings()
+            out: dict[str, list[str]] = {table: [] for table in tables}
+            for row in rows:
+                out[str(row["table_name"])].append(str(row["column_name"]))
+            return out

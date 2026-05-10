@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     db = sub.add_parser("db")
-    db.add_argument("action", choices=["check", "migrate", "status"], default="status", nargs="?")
+    db.add_argument("action", choices=["check", "migrate", "status", "schema"], default="status", nargs="?")
 
     discover = sub.add_parser("discover")
     discover_sub = discover.add_subparsers(dest="discover_mode")
@@ -44,8 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     mx_season.add_argument("--dry-run", action="store_true", default=False)
     mx_season.add_argument("--persist", action="store_true", default=False)
     mx_season.add_argument("--print-urls", action="store_true", default=False)
+    mx_season.add_argument("--debug", action="store_true", default=False)
     mx_season.add_argument("--browser", dest="browser", action="store_true", default=None)
     mx_season.add_argument("--no-browser", dest="browser", action="store_false")
+    mx_season.add_argument("--fallback-teams", dest="fallback_teams", action="store_true", default=None)
+    mx_season.add_argument("--no-fallback-teams", dest="fallback_teams", action="store_false")
 
     scrape = sub.add_parser("scrape")
     scrape_sub = scrape.add_subparsers(dest="scrape_mode")

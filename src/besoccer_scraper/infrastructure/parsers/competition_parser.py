@@ -13,6 +13,7 @@ _MATCH_PATH_RE = re.compile(r"/partido/.+?/(?P<id>\d{6,})(?:/)?$", re.IGNORECASE
 _MATCH_ID_FROM_ANCHOR_RE = re.compile(r"^match-(?P<id>\d{6,})$", re.IGNORECASE)
 _JSON_MATCHES_RE = re.compile(r"jsonMatches\((?P<args>[^)]*)\)", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"\d+")
+_ROUND_NUMBER_RE = re.compile(r"(\d+)")
 
 
 class CompetitionMatchPayload(TypedDict):
@@ -112,9 +113,10 @@ class CompetitionParser:
             label = option.get_text(" ", strip=True)
             if not label:
                 continue
-            rounds.append(label)
+            normalized = self._normalize_round_label(label)
+            rounds.append(normalized or label)
             if option.has_attr("selected"):
-                selected_round = label
+                selected_round = normalized or label
 
         if selected_round is None and rounds:
             selected_index = round_select.get("selectedIndex")
@@ -158,21 +160,14 @@ class CompetitionParser:
         seen_ids: set[str] = set()
         debug_enabled = os.getenv("BESOCCER_PARSER_DEBUG", "").lower() in {"1", "true", "yes"}
 
-        containers = [
-            "#mod_mainCompetitionRounds",
-            ".comp-matches",
-            ".panel-body.match-list-new",
-            "main",
-        ]
-        selector_parts = [
-            'a[data-cy="match"][href*="/partido/"]',
-            'a[id^="match-"][href*="/partido/"]',
-            'a.match-link[href*="/partido/"]',
-            'a[href*="/partido/"]',
-        ]
-        selectors = [f"{container} {part}" for container in containers for part in selector_parts]
-        selectors.append('a[href*="/partido/"]')
-        candidate_anchors = soup.select(",".join(selectors))
+        scope = (
+            soup.select_one("#mod_mainCompetitionRounds")
+            or soup.select_one(".comp-matches")
+            or soup.select_one(".panel-body.match-list-new")
+            or soup.select_one("main")
+            or soup
+        )
+        candidate_anchors = scope.select('a[href*="/partido/"]')
         if debug_enabled:
             total_partido = len(soup.select('a[href*="/partido/"]'))
             data_cy_match = len(soup.select('a[data-cy="match"]'))
@@ -192,12 +187,15 @@ class CompetitionParser:
             if source_match_id in seen_ids:
                 continue
 
-            container = anchor.find_parent(["article", "li", "tr", "div"]) or anchor
+            container = anchor.find_parent(["article", "div", "li"]) or anchor
             home, away = self._extract_teams(container)
             home_score, away_score = self._extract_scores(container)
             status = self._extract_status(container)
             starttime = self._extract_starttime(container)
-            match_competition_name = self._text_first(container, [".middle-info"]) or competition_name
+            local_competition_name = self._text_first(container, [".middle-info"])
+            if local_competition_name and competition_name and local_competition_name != competition_name:
+                continue
+            match_competition_name = local_competition_name or competition_name
 
             parsed.append(
                 ParsedCompetitionMatch(
@@ -219,6 +217,14 @@ class CompetitionParser:
         if debug_enabled:
             print(f"[competition_parser] parsed matches: {len(parsed)}")
         return parsed
+
+    @staticmethod
+    def _normalize_round_label(label: str) -> str:
+        text = (label or "").strip().upper()
+        match = _ROUND_NUMBER_RE.search(text)
+        if match:
+            return f"JORNADA{int(match.group(1))}"
+        return text
 
     def _normalize_match_url(self, href: str) -> str | None:
         path = urlparse(href).path.strip()
@@ -250,12 +256,14 @@ class CompetitionParser:
 
     def _extract_teams(self, container) -> tuple[str, str]:
         home = self._text_first(container, [
+            ".team_left .name",
             '[data-cy="homeTeam"]',
             ".team-home",
             ".home-team",
             ".local",
         ])
         away = self._text_first(container, [
+            ".team_right .name",
             '[data-cy="awayTeam"]',
             ".team-away",
             ".away-team",
@@ -273,6 +281,7 @@ class CompetitionParser:
     def _extract_status(self, container) -> str:
         status = self._text_first(container, [
             ".match-status-label",
+            "[data-cy='matchTag']",
             ".tag",
             '[data-cy="matchStatus"]',
             ".marker",
