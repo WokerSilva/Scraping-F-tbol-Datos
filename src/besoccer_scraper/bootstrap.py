@@ -13,6 +13,7 @@ from besoccer_scraper.infrastructure.db.connection import DatabaseFactories, bui
 from besoccer_scraper.infrastructure.db.repositories import PostgresUnitOfWork
 from besoccer_scraper.infrastructure.http.client import HttpClient
 from besoccer_scraper.infrastructure.parsers.competition_parser import CompetitionParser
+from besoccer_scraper.infrastructure.parsers.match_parser import MatchParser
 from besoccer_scraper.infrastructure.parsers.team_matches_parser import TeamMatchesParser
 
 
@@ -24,6 +25,7 @@ class Container:
     http_client: HttpClient
     competition_parser: CompetitionParser
     matches_parser: TeamMatchesParser
+    match_parser: MatchParser
     request_policy: RequestPolicy
     retry_policy: RetryPolicy
     discover_use_case: DiscoverCompetitionsUseCase
@@ -48,6 +50,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
 
     competition_parser = CompetitionParser()
     matches_parser = TeamMatchesParser()
+    match_parser = MatchParser()
 
     request_policy = RequestPolicy(
         timeout_seconds=settings.http_timeout_seconds,
@@ -73,7 +76,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     scrape_use_case = ScrapeMatchesUseCase(
         uow=uow,
         http_client=http_client,
-        parser=matches_parser,
+        parser=match_parser,
         request_policy=request_policy,
     )
     audit_use_case = AuditRunUseCase(uow=uow)
@@ -86,6 +89,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         http_client=http_client,
         competition_parser=competition_parser,
         matches_parser=matches_parser,
+        match_parser=match_parser,
         request_policy=request_policy,
         retry_policy=retry_policy,
         discover_use_case=discover_use_case,

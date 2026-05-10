@@ -49,8 +49,23 @@ def build_parser() -> argparse.ArgumentParser:
     mx_season.add_argument("--print-urls", action="store_true", default=False)
 
     scrape = sub.add_parser("scrape")
-    scrape.add_argument("--competition-id", required=True)
-    scrape.add_argument("--source-url", required=True)
+    scrape_sub = scrape.add_subparsers(dest="scrape_mode")
+    scrape_default = scrape_sub.add_parser("default")
+    scrape_default.set_defaults(scrape_mode="default")
+    scrape_default.add_argument("--competition-id", required=True)
+    scrape_default.add_argument("--source-url", required=True)
+    scrape_match = scrape_sub.add_parser("match")
+    scrape_match.set_defaults(scrape_mode="match")
+    scrape_match.add_argument("--url", required=True)
+    scrape_match.add_argument("--competition-slug", required=True)
+    scrape_match.add_argument("--round-label", default=None)
+    scrape_match.add_argument("--debug-html", action="store_true", default=False)
+    scrape_pending = scrape_sub.add_parser("pending-matches")
+    scrape_pending.set_defaults(scrape_mode="pending-matches")
+    scrape_pending.add_argument("--competition", required=True)
+    scrape_pending.add_argument("--season-key", required=True)
+    scrape_pending.add_argument("--limit", type=int, default=20)
+    scrape_pending.add_argument("--debug-html", action="store_true", default=False)
 
     audit = sub.add_parser("audit")
     audit.add_argument("--message", required=True)
@@ -72,7 +87,7 @@ def main(argv: list[str] | None = None) -> object:
     if args.command == "discover":
         return run_discover(container, args)
     if args.command == "scrape":
-        return run_scrape(container, args.competition_id, args.source_url)
+        return run_scrape(container, args)
     if args.command == "audit":
         return run_audit(container, args.message)
     if args.command == "pipeline":
