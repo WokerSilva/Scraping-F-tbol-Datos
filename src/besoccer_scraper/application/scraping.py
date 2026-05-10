@@ -82,15 +82,15 @@ class ScrapeMatchesUseCase:
         return 1
 
     def _select_targets(self, *, limit: int) -> list[dict[str, Any]]:
-        repository = self.uow.scrape_targets
-        if hasattr(repository, "select_pending"):
-            return list(repository.select_pending(limit=limit))
-        return []
+        return list(self.uow.scrape_targets.list_pending(limit=limit))
 
     def _mark_target(self, target_id: Any, status: TargetStatus, error: str | None = None) -> None:
-        repository = self.uow.scrape_targets
-        if hasattr(repository, "mark_status"):
-            repository.mark_status(target_id=target_id, status=status.value, error=error)
+        if status == TargetStatus.IN_PROGRESS:
+            self.uow.scrape_targets.mark_in_progress(target_id=int(target_id))
+        elif status == TargetStatus.PARSED:
+            self.uow.scrape_targets.mark_parsed(target_id=int(target_id))
+        elif status == TargetStatus.FAILED:
+            self.uow.scrape_targets.mark_failed(target_id=int(target_id), error=error or "unknown error")
 
     def _save_raw_page(self, url: str, html: str) -> None:
         payload = {
@@ -101,5 +101,11 @@ class ScrapeMatchesUseCase:
             "status_code": 200,
             "fetched_at": datetime.now(timezone.utc),
         }
-        if hasattr(self.uow.raw_pages, "insert"):
-            self.uow.raw_pages.insert(**payload)
+        self.uow.raw_pages.save_raw_page(
+            source_name=payload["source_name"],
+            url=payload["url"],
+            content_hash=payload["body_hash"],
+            body=payload["body"],
+            status_code=payload["status_code"],
+            metadata={"fetched_at": payload["fetched_at"].isoformat()},
+        )

@@ -23,43 +23,36 @@ class AuditRunUseCase:
 
 @dataclass
 class AuditCoverageUseCase:
-    uow: object
+    uow: UnitOfWork
 
     def execute(self, *, competition: str, season_key: str) -> dict[str, int | float | str | None]:
         run_id: int | None = None
-        if hasattr(self.uow, "job_runs") and hasattr(self.uow.job_runs, "start"):
-            run_id = self.uow.job_runs.start("audit.coverage")
+        run_id = self.uow.job_runs.start_run(job_name="audit.coverage")
 
         try:
             coverage = self.uow.scrape_targets.coverage_by_competition_season(
                 competition=competition,
                 season_key=season_key,
             )
-            if run_id is not None and hasattr(self.uow, "job_logs") and hasattr(self.uow.job_logs, "append"):
-                self.uow.job_logs.append(
-                    job_run_id=run_id,
-                    log_level="INFO",
-                    message=(
-                        "audit.coverage computed "
-                        f"competition={competition} season_key={season_key} "
-                        f"targets_total={coverage.get('targets_total', 0)} parsed={coverage.get('parsed', 0)}"
-                    ),
-                )
-            if run_id is not None and hasattr(self.uow.job_runs, "finish"):
-                self.uow.job_runs.finish(run_id=run_id, status="success")
+            self.uow.job_runs.log_event(
+                run_id=run_id,
+                event_type="coverage.computed",
+                payload={
+                    "competition": competition,
+                    "season_key": season_key,
+                    "targets_total": coverage.get("targets_total", 0),
+                    "parsed": coverage.get("parsed", 0),
+                },
+            )
+            self.uow.job_runs.finish_run(run_id=run_id, status="success")
             self.uow.commit()
             return coverage
         except Exception as exc:
-            if run_id is not None and hasattr(self.uow, "job_logs") and hasattr(self.uow.job_logs, "append"):
-                self.uow.job_logs.append(
-                    job_run_id=run_id,
-                    log_level="ERROR",
-                    message=(
-                        "audit.coverage failed "
-                        f"competition={competition} season_key={season_key} error={exc}"
-                    ),
-                )
-            if run_id is not None and hasattr(self.uow.job_runs, "finish"):
-                self.uow.job_runs.finish(run_id=run_id, status="failed")
+            self.uow.job_runs.log_event(
+                run_id=run_id,
+                event_type="coverage.failed",
+                payload={"competition": competition, "season_key": season_key, "error": str(exc)},
+            )
+            self.uow.job_runs.finish_run(run_id=run_id, status="failed")
             self.uow.commit()
             raise

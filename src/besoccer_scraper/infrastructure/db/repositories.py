@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 
@@ -144,6 +145,187 @@ class RunLocksRepository(BaseRepository):
     table_name = "run_locks"
 
 
+class PostgresTargetRepository(ScrapeTargetsRepository):
+    def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> int:
+        query = text(
+            """
+            INSERT INTO scrape_targets (source_name, target_type, url, source_match_id, payload)
+            VALUES (:source_name, :target_type, :url, :source_match_id, :payload)
+            ON CONFLICT (source_name, target_type, url)
+            DO UPDATE SET
+                source_match_id = EXCLUDED.source_match_id,
+                payload = EXCLUDED.payload
+            RETURNING id
+            """
+        ).bindparams(bindparam("payload", type_=JSONB))
+        row = self.session.execute(
+            query,
+            {
+                "source_name": source_name,
+                "target_type": target_type,
+                "url": url,
+                "source_match_id": source_match_id,
+                "payload": payload,
+            },
+        ).one()
+        return int(row[0])
+
+    def list_pending(self, *, limit: int) -> list[dict[str, Any]]:
+        query = text(
+            """
+            SELECT id, source_name, target_type, url, source_match_id, payload
+            FROM scrape_targets
+            WHERE COALESCE(payload ->> 'status', 'pending') = 'pending'
+            ORDER BY id
+            LIMIT :limit
+            """
+        )
+        return list(self.session.execute(query, {"limit": limit}).mappings())
+
+    def mark_in_progress(self, *, target_id: int) -> None:
+        self._set_status(target_id=target_id, status="in_progress")
+
+    def mark_scraped(self, *, target_id: int) -> None:
+        self._set_status(target_id=target_id, status="scraped")
+
+    def mark_parsed(self, *, target_id: int) -> None:
+        self._set_status(target_id=target_id, status="parsed")
+
+    def mark_failed(self, *, target_id: int, error: str) -> None:
+        self._set_status(target_id=target_id, status="failed", error=error)
+
+    def count_by_status(self) -> dict[str, int]:
+        query = text(
+            """
+            SELECT COALESCE(payload ->> 'status', 'pending') AS status, COUNT(*)::BIGINT AS total
+            FROM scrape_targets
+            GROUP BY COALESCE(payload ->> 'status', 'pending')
+            """
+        )
+        return {str(row["status"]): int(row["total"]) for row in self.session.execute(query).mappings()}
+
+    def count_by_competition_season(self, *, competition: str, season_key: str) -> int:
+        query = text(
+            """
+            SELECT COUNT(*)::BIGINT AS total
+            FROM scrape_targets
+            WHERE COALESCE(payload ->> 'competition', payload ->> 'competition_slug', payload ->> 'competition_id') = :competition
+              AND COALESCE(payload ->> 'season_key', payload ->> 'season') = :season_key
+            """
+        )
+        row = self.session.execute(query, {"competition": competition, "season_key": season_key}).one()
+        return int(row[0])
+
+    def _set_status(self, *, target_id: int, status: str, error: str | None = None) -> None:
+        query = text(
+            """
+            UPDATE scrape_targets
+            SET payload = COALESCE(payload, '{}'::jsonb) ||
+                jsonb_build_object('status', :status, 'updated_at', NOW(), 'error', :error)
+            WHERE id = :target_id
+            """
+        )
+        self.session.execute(query, {"target_id": target_id, "status": status, "error": error})
+
+
+class PostgresRawPageRepository(RawPagesRepository):
+    def save_raw_page(
+        self,
+        *,
+        source_name: str,
+        url: str,
+        content_hash: str,
+        body: str,
+        status_code: int | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        query = text(
+            """
+            INSERT INTO raw_pages (source_name, url, body_hash, body, status_code)
+            VALUES (:source_name, :url, :content_hash, :body, :status_code)
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """
+        )
+        row = self.session.execute(
+            query,
+            {"source_name": source_name, "url": url, "content_hash": content_hash, "body": body, "status_code": status_code},
+        ).one_or_none()
+        if row is not None:
+            return int(row[0])
+        existing = self.session.execute(
+            text(
+                """
+                SELECT id
+                FROM raw_pages
+                WHERE source_name = :source_name AND url = :url AND body_hash = :content_hash
+                LIMIT 1
+                """
+            ),
+            {"source_name": source_name, "url": url, "content_hash": content_hash},
+        ).one()
+        return int(existing[0])
+
+
+class PostgresMatchRepository(MatchesRepository):
+    def upsert_match(self, *, source_id: int, source_match_id: str, payload: dict[str, Any], season_id: int | None = None) -> int:
+        query = text(
+            """
+            INSERT INTO matches (source_id, source_match_id, season_id, payload)
+            VALUES (:source_id, :source_match_id, :season_id, :payload)
+            ON CONFLICT (source_id, source_match_id)
+            DO UPDATE SET season_id = EXCLUDED.season_id, payload = EXCLUDED.payload
+            RETURNING id
+            """
+        ).bindparams(bindparam("payload", type_=JSONB))
+        row = self.session.execute(
+            query,
+            {"source_id": source_id, "source_match_id": source_match_id, "season_id": season_id, "payload": payload},
+        ).one()
+        return int(row[0])
+
+    def get_by_source_match_id(self, *, source_id: int, source_match_id: str) -> dict[str, Any] | None:
+        row = self.session.execute(
+            text("SELECT * FROM matches WHERE source_id = :source_id AND source_match_id = :source_match_id"),
+            {"source_id": source_id, "source_match_id": source_match_id},
+        ).mappings().one_or_none()
+        return dict(row) if row else None
+
+    def count_by_competition_season(self, *, competition: str, season_key: str) -> int:
+        row = self.session.execute(
+            text(
+                """
+                SELECT COUNT(*)::BIGINT AS total
+                FROM matches
+                WHERE COALESCE(payload ->> 'competition', payload ->> 'competition_slug', payload ->> 'competition_id') = :competition
+                  AND COALESCE(payload ->> 'season_key', payload ->> 'season') = :season_key
+                """
+            ),
+            {"competition": competition, "season_key": season_key},
+        ).one()
+        return int(row[0])
+
+
+class PostgresRunRepository(JobRunsRepository):
+    def start_run(self, *, job_name: str, metadata: dict[str, Any] | None = None) -> int:
+        return self.start(job_name)
+
+    def finish_run(self, *, run_id: int, status: str, stats: dict[str, Any] | None = None) -> None:
+        self.finish(run_id=run_id, status=status)
+
+    def log_event(self, *, run_id: int, event_type: str, payload: dict[str, Any]) -> None:
+        message = f"{event_type}: {payload}"
+        self.session.execute(
+            text(
+                """
+                INSERT INTO job_logs (job_run_id, log_level, message)
+                VALUES (:run_id, 'INFO', :message)
+                """
+            ),
+            {"run_id": run_id, "message": message},
+        )
+
+
 @dataclass
 class PostgresUnitOfWork:
     session: Session
@@ -153,10 +335,10 @@ class PostgresUnitOfWork:
         self.competitions = CompetitionsRepository(self.session)
         self.seasons = SeasonsRepository(self.session)
         self.teams = TeamsRepository(self.session)
-        self.scrape_targets = ScrapeTargetsRepository(self.session)
-        self.raw_pages = RawPagesRepository(self.session)
-        self.matches = MatchesRepository(self.session)
-        self.job_runs = JobRunsRepository(self.session)
+        self.scrape_targets = PostgresTargetRepository(self.session)
+        self.raw_pages = PostgresRawPageRepository(self.session)
+        self.matches = PostgresMatchRepository(self.session)
+        self.job_runs = PostgresRunRepository(self.session)
         self.job_logs = JobLogsRepository(self.session)
         self.run_locks = RunLocksRepository(self.session)
 
