@@ -2,7 +2,7 @@ from besoccer_scraper.domain.services import build_season_key
 
 
 def test_season_key_policy_clausura_mexico() -> None:
-    assert build_season_key("clausura_mexico", 2025) == "clausura-2025"
+    assert build_season_key("clausura_mexico", 2026) == "clausura-2026"
 
 
 def test_season_key_policy_apertura_mexico() -> None:
