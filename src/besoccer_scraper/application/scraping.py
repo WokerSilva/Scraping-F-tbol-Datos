@@ -6,7 +6,7 @@ from typing import Any
 
 from besoccer_scraper.domain.enums import TargetStatus
 from besoccer_scraper.domain.policies import RequestPolicy
-from besoccer_scraper.domain.repositories import UnitOfWork
+from besoccer_scraper.domain.repositories import PendingBatchTargetRepository, ScrapeMatchTargetRepository, UnitOfWork
 from besoccer_scraper.shared.hashing import sha256_hex
 
 
@@ -55,7 +55,7 @@ class ScrapeMatchesUseCase:
                 self._mark_target(target_id, TargetStatus.PARSED)
                 parsed_total += 1
             except Exception as exc:  # noqa: BLE001
-                self._mark_target(target_id, TargetStatus.FAILED, error=str(exc))
+                self._mark_target(target_id, TargetStatus.FAILED_PERMANENT, error=str(exc))
         self.uow.commit()
         return parsed_total
 
@@ -82,15 +82,51 @@ class ScrapeMatchesUseCase:
         return 1
 
     def _select_targets(self, *, limit: int) -> list[dict[str, Any]]:
-        return list(self.uow.scrape_targets.list_pending(limit=limit))
+        repository: PendingBatchTargetRepository = self.uow.scrape_targets
+        return list(repository.list_for_processing(limit=limit))
 
     def _mark_target(self, target_id: Any, status: TargetStatus, error: str | None = None) -> None:
+        repository: ScrapeMatchTargetRepository = self.uow.scrape_targets
+        target_int = int(target_id)
         if status == TargetStatus.IN_PROGRESS:
-            self.uow.scrape_targets.mark_in_progress(target_id=int(target_id))
-        elif status == TargetStatus.PARSED:
-            self.uow.scrape_targets.mark_parsed(target_id=int(target_id))
-        elif status == TargetStatus.FAILED:
-            self.uow.scrape_targets.mark_failed(target_id=int(target_id), error=error or "unknown error")
+            repository.mark_transition(
+                target_id=target_int,
+                from_statuses=("pending", "discovered", "retry_scheduled"),
+                to_status="in_progress",
+            )
+            return
+        if status == TargetStatus.PARSED:
+            repository.mark_transition(
+                target_id=target_int,
+                from_statuses=("in_progress",),
+                to_status="parsed",
+            )
+            return
+        if status == TargetStatus.BLOCKED:
+            repository.mark_transition(
+                target_id=target_int,
+                from_statuses=("in_progress",),
+                to_status="blocked",
+                error=error,
+            )
+            return
+        if status == TargetStatus.RETRY_SCHEDULED:
+            repository.mark_transition(
+                target_id=target_int,
+                from_statuses=("in_progress",),
+                to_status="retry_scheduled",
+                error=error,
+            )
+            return
+        if status == TargetStatus.FAILED_PERMANENT:
+            repository.mark_transition(
+                target_id=target_int,
+                from_statuses=("in_progress",),
+                to_status="failed_permanent",
+                error=error or "unknown error",
+            )
+            return
+        raise ValueError(f"Unsupported target status transition to {status.value}")
 
     def _save_raw_page(self, url: str, html: str) -> None:
         payload = {

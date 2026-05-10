@@ -9,6 +9,7 @@ from besoccer_scraper.application.pipeline import PipelineUseCase
 from besoccer_scraper.application.scraping import ScrapeMatchesUseCase
 from besoccer_scraper.config.settings import Settings, load_settings, require_database_url
 from besoccer_scraper.domain.policies import RequestPolicy, RetryPolicy
+from besoccer_scraper.domain.repositories import DiscoverySeasonTargetRepository, PendingBatchTargetRepository, ScrapeMatchTargetRepository
 from besoccer_scraper.infrastructure.db.connection import DatabaseFactories, build_database_factories, with_ssl_mode
 from besoccer_scraper.infrastructure.db.repositories import PostgresUnitOfWork
 from besoccer_scraper.infrastructure.http.client import HttpClient
@@ -74,6 +75,12 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     discover_mx_season_use_case = DiscoverMxSeasonUseCase(
         team_use_case=discover_mx_team_use_case,
     )
+
+    discovery_season_repo: DiscoverySeasonTargetRepository = uow.scrape_targets
+    scrape_match_repo: ScrapeMatchTargetRepository = uow.scrape_targets
+    scrape_pending_batch_repo: PendingBatchTargetRepository = uow.scrape_targets
+
+    _ = (discovery_season_repo, scrape_match_repo, scrape_pending_batch_repo)
 
     scrape_use_case = ScrapeMatchesUseCase(
         uow=uow,
