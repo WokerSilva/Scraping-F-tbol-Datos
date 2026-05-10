@@ -7,7 +7,11 @@ def run_db_command(container: object, action: str) -> str:
     service = DatabaseService(container.db.engine)
 
     if action == "check":
-        return "ok" if service.check() else "fail"
+        report = service.check_report(
+            database_url=container.settings.database_url,
+            source=container.settings.database_source,
+        )
+        return "\n".join(f"{key}={value}" for key, value in report.items())
     if action == "migrate":
         executed = service.migrate()
         return f"applied={','.join(executed) if executed else 'none'}"
