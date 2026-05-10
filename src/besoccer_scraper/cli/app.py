@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from besoccer_scraper.bootstrap import build_container
-from besoccer_scraper.cli.audit import run_audit
+from besoccer_scraper.cli.audit import run_audit_coverage, run_audit_message
 from besoccer_scraper.cli.db import run_db_command
 from besoccer_scraper.cli.discover import run_discover
 from besoccer_scraper.cli.pipeline import run_pipeline
@@ -68,7 +68,16 @@ def build_parser() -> argparse.ArgumentParser:
     scrape_pending.add_argument("--debug-html", action="store_true", default=False)
 
     audit = sub.add_parser("audit")
-    audit.add_argument("--message", required=True)
+    audit_sub = audit.add_subparsers(dest="audit_mode", required=True)
+
+    audit_message = audit_sub.add_parser("message")
+    audit_message.set_defaults(audit_mode="message")
+    audit_message.add_argument("--message", required=True)
+
+    audit_coverage = audit_sub.add_parser("coverage")
+    audit_coverage.set_defaults(audit_mode="coverage")
+    audit_coverage.add_argument("--competition", required=True)
+    audit_coverage.add_argument("--season-key", required=True)
 
     pipeline = sub.add_parser("pipeline")
     pipeline.add_argument("--discover-url", required=True)
@@ -89,7 +98,11 @@ def main(argv: list[str] | None = None) -> object:
     if args.command == "scrape":
         return run_scrape(container, args)
     if args.command == "audit":
-        return run_audit(container, args.message)
+        if args.audit_mode == "message":
+            return run_audit_message(container, args.message)
+        if args.audit_mode == "coverage":
+            return run_audit_coverage(container, competition=args.competition, season_key=args.season_key)
+        raise ValueError(f"Unknown audit mode: {args.audit_mode}")
     if args.command == "pipeline":
         return run_pipeline(container, args.discover_url, args.competition_id, args.scrape_url)
     raise ValueError(f"Unknown command: {args.command}")
