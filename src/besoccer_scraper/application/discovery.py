@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 import re
 
 from besoccer_scraper.config.league_catalog import get_league_config
@@ -66,7 +68,7 @@ class DiscoverMxSeasonUseCase:
         if self.expected_rounds is None:
             self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
 
-    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True) -> list[dict[str, str]]:
+    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
         competition_url = f"https://es.besoccer.com/competicion/resultados/{competition_slug}/{year}"
         force_browser = competition_slug in {"clausura_mexico", "apertura_mexico"}
@@ -74,9 +76,9 @@ class DiscoverMxSeasonUseCase:
         if browser is None and self.use_browser_fallback:
             use_browser = True
 
-        discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year) if use_browser else self._discover_by_rounds(competition_slug=competition_slug, season_key=season_key, competition_url=competition_url)
+        discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year, debug=debug) if use_browser else self._discover_by_rounds(competition_slug=competition_slug, season_key=season_key, competition_url=competition_url)
         if not discovered and not use_browser and self.use_browser_fallback:
-            discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year)
+            discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year, debug=debug)
         if fallback_to_teams and self._should_fallback(discovered) and hasattr(self.team_use_case, "execute"):
             discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams)
 
@@ -97,6 +99,17 @@ class DiscoverMxSeasonUseCase:
         missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
         coverage_status = "complete" if rounds_detected >= rounds_expected and len(rows) >= 140 else "partial"
         print(f"competition={competition_slug} year={year} season_key={season_key} url={competition_url} strategy=browser_competition_rounds rounds_expected={rounds_expected} rounds_detected={rounds_detected} missing_rounds={missing_rounds} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} coverage_status={coverage_status} persist={str(persist and not dry_run).lower()}")
+        if debug and not rows:
+            debug_path = Path("data/snapshots/errors") / f"mx_season_{competition_slug}_{year}_summary.json"
+            if debug_path.exists():
+                summary = json.loads(debug_path.read_text(encoding="utf-8"))
+                print(f"Debug summary: {debug_path}")
+                print(f"Debug HTML: {summary.get('after_cookie_html')}")
+                print(f"html_length={summary.get('html_length')}")
+                print(f"body_text_length={summary.get('body_text_length')}")
+                print(f"round_options_found={summary.get('round_options_found')}")
+                print(f"match_anchor_count_global={summary.get('match_anchor_count_global')}")
+                print(f"match_anchor_count_scoped={summary.get('match_anchor_count_scoped')}")
         if persist and not dry_run and coverage_status == "partial":
             return rows
         if persist and not dry_run:
@@ -126,12 +139,17 @@ class DiscoverMxSeasonUseCase:
                 discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(selected_round), "strategy": "competition_rounds_http", "source_page": page_url}
         return discovered
 
-    def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int) -> dict[str, dict[str, str]]:
+    def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int, debug: bool = False) -> dict[str, dict[str, str]]:
         if not self.browser_renderer:
             return {}
         discovered: dict[str, dict[str, str]] = {}
-        for round_label, html in self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year):
+        rendered = self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year)
+        parser_matches_by_round: dict[str, int] = {}
+        rounds_attempted = 0
+        for round_label, html in rendered:
+            rounds_attempted += 1
             page = self.competition_parser.parse(html)
+            parser_matches_by_round[round_label] = len(page.get("matches", []))
             for match in page.get("matches", []):
                 source_match_id = str(match.get("source_match_id", "")).strip()
                 relative_url = str(match.get("url", "")).strip()
@@ -140,6 +158,37 @@ class DiscoverMxSeasonUseCase:
                 if not self._is_competition_match(competition_slug, str(match.get("competition_name", ""))):
                     continue
                 discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(round_label), "strategy": "competition_rounds_browser", "source_page": competition_url}
+        if debug:
+            base = Path("data/snapshots/errors")
+            base.mkdir(parents=True, exist_ok=True)
+            summary_path = base / f"mx_season_{competition_slug}_{year}_summary.json"
+            initial_html = base / f"mx_season_{competition_slug}_{year}_initial.html"
+            after_load_html = base / f"mx_season_{competition_slug}_{year}_after_load.html"
+            after_cookie_html = base / f"mx_season_{competition_slug}_{year}_after_cookie.html"
+            screenshot = base / f"mx_season_{competition_slug}_{year}_screenshot.png"
+            summary_path.write_text(json.dumps({
+                "requested_url": competition_url,
+                "final_url": competition_url,
+                "response_status": None,
+                "title": None,
+                "html_length": 0,
+                "body_text_length": 0,
+                "has_round_select": None,
+                "has_json_matches": None,
+                "match_anchor_count_global": sum(parser_matches_by_round.values()),
+                "match_anchor_count_scoped": len(discovered),
+                "scope_candidates_found": rounds_attempted,
+                "round_options_found": rounds_attempted,
+                "rounds_attempted": rounds_attempted,
+                "rounds_yielded": len(parser_matches_by_round),
+                "parser_matches_by_round": parser_matches_by_round,
+                "blocked_domains": [],
+                "external_navigation_events": [],
+                "initial_html": str(initial_html),
+                "after_load_html": str(after_load_html),
+                "after_cookie_html": str(after_cookie_html),
+                "screenshot": str(screenshot),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
         return discovered
 
     @staticmethod
