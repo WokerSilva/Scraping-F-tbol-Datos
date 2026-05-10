@@ -59,6 +59,11 @@ class DiscoverMxSeasonUseCase:
     http_client: object
     browser_renderer: object | None = None
     use_browser_fallback: bool = False
+    expected_rounds: dict[str, int] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.expected_rounds is None:
+            self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
 
     def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
@@ -84,7 +89,13 @@ class DiscoverMxSeasonUseCase:
                 for url in grouped[round_label]:
                     print(url)
 
-        print(f"competition={competition_slug} year={year} season_key={season_key} url={competition_url} strategy=browser_competition_rounds rounds_detected={len(set(r['round_label'] for r in rows))} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} persist={str(persist and not dry_run).lower()}")
+        rounds_detected = len(set(r["round_label"] for r in rows))
+        rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
+        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in {r["round_label"] for r in rows}]
+        coverage_status = "complete" if rounds_detected >= rounds_expected and len(rows) >= 140 else "partial"
+        print(f"competition={competition_slug} year={year} season_key={season_key} url={competition_url} strategy=browser_competition_rounds rounds_expected={rounds_expected} rounds_detected={rounds_detected} missing_rounds={missing_rounds} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} coverage_status={coverage_status} persist={str(persist and not dry_run).lower()}")
+        if persist and not dry_run and coverage_status == "partial":
+            return rows
         if persist and not dry_run:
             for row in rows:
                 self.team_use_case.uow.scrape_targets.upsert_target(source_name="besoccer", target_type="match_page", url=row["url"], source_match_id=row["source_match_id"], payload={"source_competition_slug": competition_slug, "season_key": season_key, "round_label": row["round_label"], "status": "pending", "metadata_json": {"discovery_strategy": row["strategy"], "year": year, "source_page_url": competition_url}})
@@ -109,7 +120,7 @@ class DiscoverMxSeasonUseCase:
                 relative_url = str(match.get("url", "")).strip()
                 if not source_match_id or not relative_url or source_match_id in discovered:
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": f"https://es.besoccer.com{relative_url}", "source_competition_slug": competition_slug, "season_key": season_key, "round_label": selected_round, "strategy": "competition_rounds_http", "source_page": page_url}
+                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": selected_round, "strategy": "competition_rounds_http", "source_page": page_url}
         return discovered
 
     def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int) -> dict[str, dict[str, str]]:
@@ -123,8 +134,25 @@ class DiscoverMxSeasonUseCase:
                 relative_url = str(match.get("url", "")).strip()
                 if not source_match_id or not relative_url or source_match_id in discovered:
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": f"https://es.besoccer.com{relative_url}", "source_competition_slug": competition_slug, "season_key": season_key, "round_label": round_label, "strategy": "competition_rounds_browser", "source_page": competition_url}
+                if not self._is_competition_match(competition_slug, str(match.get("competition_name", ""))):
+                    continue
+                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": round_label, "strategy": "competition_rounds_browser", "source_page": competition_url}
         return discovered
+
+    @staticmethod
+    def _canonical_url(url: str) -> str:
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        if url.startswith("//"):
+            return f"https:{url}"
+        return f"https://es.besoccer.com{url}"
+
+    @staticmethod
+    def _is_competition_match(competition_slug: str, competition_name: str) -> bool:
+        name = competition_name.lower()
+        expected = {"clausura_mexico": "liga mx - clausura", "apertura_mexico": "liga mx - apertura"}
+        token = expected.get(competition_slug)
+        return True if not token else token in name
 
     def _should_fallback(self, discovered: dict[str, dict[str, str]]) -> bool:
         return not discovered

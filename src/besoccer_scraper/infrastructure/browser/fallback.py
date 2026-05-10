@@ -39,6 +39,7 @@ class BrowserCompetitionRenderer:
         network_events: list[dict[str, Any]] = []
         blocked_external_navigation_count = 0
         blocked_domains_seen: list[str] = []
+        external_navigation_events: list[str] = []
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             context = browser.new_context(
@@ -71,7 +72,7 @@ class BrowserCompetitionRenderer:
             context.route("**/*", _route_handler)
             page = context.new_page()
             page.on("response", lambda r: network_events.append({"url": r.url, "status": r.status, "method": r.request.method, "resource_type": r.request.resource_type}))
-            page.on("framenavigated", lambda frame: self._raise_if_external_url(frame.url))
+            page.on("framenavigated", lambda frame: self._capture_external_navigation(frame.url, external_navigation_events))
             response = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             if response is None:
                 debug = self._save_debug(page=page, competition=competition, year=year, requested_url=url, response=None, network_events=network_events, blocked_external_navigation_count=blocked_external_navigation_count, blocked_domains=blocked_domains_seen)
@@ -112,7 +113,6 @@ class BrowserCompetitionRenderer:
                 value = (option.get_attribute("value") or "").strip()
                 label = (option.inner_text() or "").strip() or f"round-{idx+1}"
                 self._set_round_via_js(page=page, selector=select_selector, value=value, index=idx)
-                self._raise_if_external_url(page.url)
                 page.wait_for_timeout(self.wait_after_load_ms)
                 page.wait_for_selector('a[href*="/partido/"]', state="attached", timeout=5_000)
                 pages.append((label, page.content()))
@@ -124,7 +124,7 @@ class BrowserCompetitionRenderer:
             raise HttpFetchError("Browser fallback could not extract round pages", url=url)
         return pages
 
-    def _save_debug(self, *, page: object, competition: str | None, year: int | None, requested_url: str, response: object | None, network_events: list[dict[str, Any]], blocked_external_navigation_count: int, blocked_domains: list[str]) -> str:
+    def _save_debug(self, *, page: object, competition: str | None, year: int | None, requested_url: str, response: object | None, network_events: list[dict[str, Any]], blocked_external_navigation_count: int, blocked_domains: list[str], external_navigation_events: list[str] | None = None) -> str:
         base = Path("data/snapshots/errors")
         base.mkdir(parents=True, exist_ok=True)
         safe_competition = competition or "unknown_competition"
@@ -158,6 +158,7 @@ class BrowserCompetitionRenderer:
             "network_events": network_events[:30],
             "blocked_external_navigation_count": blocked_external_navigation_count,
             "blocked_domains": blocked_domains,
+            "external_navigation_events": external_navigation_events or [],
             "screenshot_path": str(png_path),
             "html_path": str(html_path),
         }
@@ -205,6 +206,11 @@ class BrowserCompetitionRenderer:
         host = self._hostname(url)
         if host and not self._is_allowed_host(host):
             raise HttpFetchError(f"External navigation blocked/detected: {url}", url=url)
+
+    def _capture_external_navigation(self, url: str, events: list[str]) -> None:
+        host = self._hostname(url)
+        if host and not self._is_allowed_host(host):
+            events.append(url)
 
     @staticmethod
     def _extract_jsonmatches_args(onchange: str) -> list[int]:
