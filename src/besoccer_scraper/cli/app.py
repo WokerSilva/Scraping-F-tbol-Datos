@@ -77,6 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
     audit_coverage.add_argument("--competition", required=True)
     audit_coverage.add_argument("--season-key", required=True)
 
+    audit_mx_season = audit_sub.add_parser("mx-season")
+    audit_mx_season.set_defaults(audit_mode="mx-season")
+    audit_mx_season.add_argument("--competition", required=True)
+    audit_mx_season.add_argument("--year", type=int, required=True)
+
+    inspect = sub.add_parser("inspect")
+    inspect_sub = inspect.add_subparsers(dest="inspect_mode", required=True)
+    inspect_match = inspect_sub.add_parser("match")
+    inspect_match.set_defaults(inspect_mode="match")
+    inspect_match.add_argument("--source-match-id", required=True)
+
     pipeline = sub.add_parser("pipeline")
     pipeline.add_argument("--discover-url", required=True)
     pipeline.add_argument("--competition-id", required=True)
@@ -111,14 +122,24 @@ def main(argv: list[str] | None = None) -> object:
         return run_scrape(container, args)
     if args.command == "audit":
         from besoccer_scraper.bootstrap import build_container
-        from besoccer_scraper.cli.audit import run_audit_coverage, run_audit_message
+        from besoccer_scraper.cli.audit import run_audit_coverage, run_audit_message, run_audit_mx_season
 
         container = build_container(args)
         if args.audit_mode == "message":
             return run_audit_message(container, args.message)
         if args.audit_mode == "coverage":
             return run_audit_coverage(container, competition=args.competition, season_key=args.season_key)
+        if args.audit_mode == "mx-season":
+            return run_audit_mx_season(container, competition=args.competition, year=args.year)
         raise ValueError(f"Unknown audit mode: {args.audit_mode}")
+    if args.command == "inspect":
+        from besoccer_scraper.bootstrap import build_container
+        from besoccer_scraper.cli.audit import inspect_match
+
+        container = build_container(args)
+        if args.inspect_mode == "match":
+            return inspect_match(container, source_match_id=args.source_match_id)
+        raise ValueError(f"Unknown inspect mode: {args.inspect_mode}")
     if args.command == "pipeline":
         from besoccer_scraper.bootstrap import build_container
         from besoccer_scraper.cli.pipeline import run_pipeline
