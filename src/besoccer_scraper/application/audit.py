@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from besoccer_scraper.domain.entities import AuditEvent
 from besoccer_scraper.domain.repositories import UnitOfWork
+from besoccer_scraper.domain.services import build_season_key
 
 
 @dataclass
@@ -66,16 +67,16 @@ class AuditMxSeasonUseCase:
     uow: UnitOfWork
 
     def execute(self, *, competition: str, year: int) -> dict[str, Any]:
-        season_key = str(year)
+        season_key = build_season_key(competition, year)
         coverage = self.uow.scrape_targets.coverage_by_competition_season(competition=competition, season_key=season_key)
 
         rows = self.uow.session.execute(
             text(
                 """
-                SELECT COALESCE(st.payload ->> 'round_label', 'unknown') AS round_label, COUNT(*)::BIGINT AS total
+                SELECT COALESCE(st.round_label, 'unknown') AS round_label, COUNT(*)::BIGINT AS total
                 FROM scrape_targets st
-                WHERE COALESCE(st.payload ->> 'competition', st.payload ->> 'competition_slug', st.payload ->> 'competition_id') = :competition
-                  AND COALESCE(st.payload ->> 'season_key', st.payload ->> 'season') = :season_key
+                WHERE st.source_competition_slug = :competition
+                  AND st.season_key = :season_key
                 GROUP BY 1
                 ORDER BY 1
                 """
