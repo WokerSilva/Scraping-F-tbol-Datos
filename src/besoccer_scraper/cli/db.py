@@ -19,4 +19,7 @@ def run_db_command(container: object, action: str) -> str:
         state = service.status()
         formatted = ", ".join(f"{v}:{s}" for v, s in state.items())
         return formatted or "no-migrations"
+    if action == "schema":
+        report = service.schema_report()
+        return "\n".join(f"{table}: {', '.join(columns) if columns else '(missing)'}" for table, columns in report.items())
     raise ValueError(f"Unknown db action: {action}")

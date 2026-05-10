@@ -79,7 +79,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         team_use_case=discover_mx_team_use_case,
         competition_parser=competition_parser,
         http_client=http_client,
-        browser_renderer=BrowserCompetitionRenderer(wait_after_load_ms=settings.browser_wait_after_load_ms),
+        browser_renderer=BrowserCompetitionRenderer(wait_after_load_ms=settings.browser_wait_after_load_ms, user_agent=settings.user_agent),
         use_browser_fallback=settings.use_browser_fallback,
     )
 

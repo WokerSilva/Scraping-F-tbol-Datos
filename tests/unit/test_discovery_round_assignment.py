@@ -8,7 +8,7 @@ class _Parser:
 
 
 class _Browser:
-    def render_round_pages(self, *, url: str):
+    def render_round_pages(self, *, url: str, competition: str | None = None, year: int | None = None):
         return [("JORNADA1", "m1"), ("JORNADA2", "m2")]
 
 
