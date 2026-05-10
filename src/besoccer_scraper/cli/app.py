@@ -10,7 +10,7 @@ ALIASES = {"db-check": ["db", "check"], "db-migrate": ["db", "migrate"], "db-sta
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="besoccer-scraper")
     parser.add_argument("--database-url", default=None)
-    parser.add_argument("--http-timeout-seconds", type=float, default=None)
+    parser.add_argument("--request-timeout-seconds", "--http-timeout-seconds", dest="request_timeout_seconds", type=float, default=None)
     parser.add_argument("--user-agent", default=None)
     parser.add_argument("--max-retries", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true", default=None)
@@ -90,32 +90,38 @@ def main(argv: list[str] | None = None) -> object:
         argv = ALIASES[argv[0]] + argv[1:]
     args = parser.parse_args(argv)
 
-    from besoccer_scraper.bootstrap import build_container
-
-    container = build_container(args)
-
     if args.command == "db":
+        from besoccer_scraper.bootstrap import build_container
         from besoccer_scraper.cli.db import run_db_command
 
+        container = build_container(args)
         return run_db_command(container, args.action)
     if args.command == "discover":
+        from besoccer_scraper.bootstrap import build_container
         from besoccer_scraper.cli.discover import run_discover
 
+        container = build_container(args)
         return run_discover(container, args)
     if args.command == "scrape":
+        from besoccer_scraper.bootstrap import build_container
         from besoccer_scraper.cli.scrape import run_scrape
 
+        container = build_container(args)
         return run_scrape(container, args)
     if args.command == "audit":
+        from besoccer_scraper.bootstrap import build_container
         from besoccer_scraper.cli.audit import run_audit_coverage, run_audit_message
 
+        container = build_container(args)
         if args.audit_mode == "message":
             return run_audit_message(container, args.message)
         if args.audit_mode == "coverage":
             return run_audit_coverage(container, competition=args.competition, season_key=args.season_key)
         raise ValueError(f"Unknown audit mode: {args.audit_mode}")
     if args.command == "pipeline":
+        from besoccer_scraper.bootstrap import build_container
         from besoccer_scraper.cli.pipeline import run_pipeline
 
+        container = build_container(args)
         return run_pipeline(container, args.discover_url, args.competition_id, args.scrape_url)
     raise ValueError(f"Unknown command: {args.command}")
