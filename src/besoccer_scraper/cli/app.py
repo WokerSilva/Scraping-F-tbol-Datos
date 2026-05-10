@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     mx_season.add_argument("--dry-run", action="store_true", default=False)
     mx_season.add_argument("--persist", action="store_true", default=False)
     mx_season.add_argument("--print-urls", action="store_true", default=False)
+    mx_season.add_argument("--debug", action="store_true", default=False)
     mx_season.add_argument("--browser", dest="browser", action="store_true", default=None)
     mx_season.add_argument("--no-browser", dest="browser", action="store_false")
 
