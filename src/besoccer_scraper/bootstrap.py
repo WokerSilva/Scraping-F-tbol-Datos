@@ -7,9 +7,9 @@ from besoccer_scraper.application.audit import AuditCoverageUseCase, AuditRunUse
 from besoccer_scraper.application.discovery import DiscoverCompetitionsUseCase, DiscoverMxSeasonUseCase, DiscoverMxTeamUseCase
 from besoccer_scraper.application.pipeline import PipelineUseCase
 from besoccer_scraper.application.scraping import ScrapeMatchesUseCase
-from besoccer_scraper.config.settings import Settings, load_settings
+from besoccer_scraper.config.settings import Settings, load_settings, require_database_url
 from besoccer_scraper.domain.policies import RequestPolicy, RetryPolicy
-from besoccer_scraper.infrastructure.db.connection import DatabaseFactories, build_database_factories
+from besoccer_scraper.infrastructure.db.connection import DatabaseFactories, build_database_factories, with_ssl_mode
 from besoccer_scraper.infrastructure.db.repositories import PostgresUnitOfWork
 from besoccer_scraper.infrastructure.http.client import HttpClient
 from besoccer_scraper.infrastructure.parsers.competition_parser import CompetitionParser
@@ -40,7 +40,8 @@ class Container:
 def build_container(cli_args: Namespace | None = None) -> Container:
     settings = load_settings(cli_args)
 
-    db = build_database_factories(settings.database_url)
+    require_database_url(settings)
+    db = build_database_factories(with_ssl_mode(settings.database_url, settings.db_ssl_mode))
     uow = PostgresUnitOfWork(session=db.session_factory())
 
     http_client = HttpClient(

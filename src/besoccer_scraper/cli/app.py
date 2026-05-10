@@ -10,6 +10,9 @@ from besoccer_scraper.cli.pipeline import run_pipeline
 from besoccer_scraper.cli.scrape import run_scrape
 
 
+ALIASES = {"db-check": ["db", "check"], "db-migrate": ["db", "migrate"], "db-status": ["db", "status"]}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="besoccer-scraper")
     parser.add_argument("--database-url", default=None)
@@ -88,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> object:
     parser = build_parser()
+    if argv and argv[0] in ALIASES:
+        argv = ALIASES[argv[0]] + argv[1:]
     args = parser.parse_args(argv)
     container = build_container(args)
 
