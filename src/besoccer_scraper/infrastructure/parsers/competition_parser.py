@@ -192,7 +192,10 @@ class CompetitionParser:
             home_score, away_score = self._extract_scores(container)
             status = self._extract_status(container)
             starttime = self._extract_starttime(container)
-            match_competition_name = self._text_first(container, [".middle-info"]) or competition_name
+            local_competition_name = self._text_first(container, [".middle-info"])
+            if local_competition_name and competition_name and local_competition_name != competition_name:
+                continue
+            match_competition_name = local_competition_name or competition_name
 
             parsed.append(
                 ParsedCompetitionMatch(
