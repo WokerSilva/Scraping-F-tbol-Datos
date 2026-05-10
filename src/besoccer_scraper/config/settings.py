@@ -18,8 +18,27 @@ class Settings:
     database_url: str
     app_env: str
     log_level: str
+    request_timeout_seconds: int
+    user_agent: str
+    max_retries: int
+    dry_run: bool
+    request_delay_min_seconds: float
+    request_delay_max_seconds: float
+    use_browser_fallback: bool
+    save_raw_pages: bool
+    cache_enabled: bool
     active_leagues: tuple[str, ...]
+    start_year: int
+    years_back: int
+    batch_size: int
+    scrape_limit: int
+    run_lock_enabled: bool
+    run_lock_ttl_minutes: int
     db_ssl_mode: str
+
+    @property
+    def http_timeout_seconds(self) -> int:
+        return self.request_timeout_seconds
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -62,7 +81,22 @@ def load_settings(cli_args: Namespace | None = None, *, env_file: str = ".env") 
         database_url=database_url,
         app_env=str(pick("app_env", "APP_ENV", "dev")),
         log_level=str(pick("log_level", "LOG_LEVEL", "INFO")).upper(),
+        request_timeout_seconds=_as_int(pick("request_timeout_seconds", "REQUEST_TIMEOUT_SECONDS", 30), 30),
+        user_agent=str(pick("user_agent", "USER_AGENT", "Mozilla/5.0 (compatible; besoccer-scraper/0.1)")),
+        max_retries=_as_int(pick("max_retries", "MAX_RETRIES", 3), 3),
+        dry_run=_as_bool(pick("dry_run", "DRY_RUN", False), False),
+        request_delay_min_seconds=float(pick("request_delay_min_seconds", "REQUEST_DELAY_MIN_SECONDS", 0.0) or 0.0),
+        request_delay_max_seconds=float(pick("request_delay_max_seconds", "REQUEST_DELAY_MAX_SECONDS", 0.0) or 0.0),
+        use_browser_fallback=_as_bool(pick("use_browser_fallback", "USE_BROWSER_FALLBACK", False), False),
+        save_raw_pages=_as_bool(pick("save_raw_pages", "SAVE_RAW_PAGES", False), False),
+        cache_enabled=_as_bool(pick("cache_enabled", "CACHE_ENABLED", False), False),
         active_leagues=_split_csv(str(pick("active_leagues", "ACTIVE_LEAGUES", ""))),
+        start_year=_as_int(pick("start_year", "START_YEAR", 2020), 2020),
+        years_back=_as_int(pick("years_back", "YEARS_BACK", 5), 5),
+        batch_size=_as_int(pick("batch_size", "BATCH_SIZE", 100), 100),
+        scrape_limit=_as_int(pick("scrape_limit", "SCRAPE_LIMIT", 0), 0),
+        run_lock_enabled=_as_bool(pick("run_lock_enabled", "RUN_LOCK_ENABLED", True), True),
+        run_lock_ttl_minutes=_as_int(pick("run_lock_ttl_minutes", "RUN_LOCK_TTL_MINUTES", 60), 60),
         db_ssl_mode=str(pick("db_ssl_mode", "DB_SSL_MODE", "prefer")),
     )
 

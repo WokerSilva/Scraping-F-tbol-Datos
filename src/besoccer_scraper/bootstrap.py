@@ -45,7 +45,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     uow = PostgresUnitOfWork(session=db.session_factory())
 
     http_client = HttpClient(
-        timeout_seconds=settings.http_timeout_seconds,
+        timeout_seconds=settings.request_timeout_seconds,
         user_agent=settings.user_agent,
         max_retries=settings.max_retries,
     )
@@ -55,7 +55,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     match_parser = MatchParser()
 
     request_policy = RequestPolicy(
-        timeout_seconds=settings.http_timeout_seconds,
+        timeout_seconds=settings.request_timeout_seconds,
         user_agent=settings.user_agent,
     )
     retry_policy = RetryPolicy(max_retries=settings.max_retries)
