@@ -3,7 +3,7 @@ from __future__ import annotations
 from argparse import Namespace
 from dataclasses import dataclass
 
-from besoccer_scraper.application.audit import AuditCoverageUseCase, AuditRunUseCase
+from besoccer_scraper.application.audit import AuditCoverageUseCase, AuditMxSeasonUseCase, AuditRunUseCase, InspectMatchUseCase
 from besoccer_scraper.application.discovery import DiscoverCompetitionsUseCase, DiscoverMxSeasonUseCase, DiscoverMxTeamUseCase
 from besoccer_scraper.application.pipeline import PipelineUseCase
 from besoccer_scraper.application.scraping import ScrapeMatchesUseCase
@@ -35,6 +35,8 @@ class Container:
     scrape_use_case: ScrapeMatchesUseCase
     audit_use_case: AuditRunUseCase
     audit_coverage_use_case: AuditCoverageUseCase
+    audit_mx_season_use_case: AuditMxSeasonUseCase
+    inspect_match_use_case: InspectMatchUseCase
     pipeline_use_case: PipelineUseCase
 
 
@@ -94,6 +96,8 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     )
     audit_use_case = AuditRunUseCase(uow=uow)
     audit_coverage_use_case = AuditCoverageUseCase(uow=uow)
+    audit_mx_season_use_case = AuditMxSeasonUseCase(uow=uow)
+    inspect_match_use_case = InspectMatchUseCase(uow=uow)
     pipeline_use_case = PipelineUseCase(discover_use_case, scrape_use_case, audit_use_case)
 
     return Container(
@@ -112,5 +116,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         scrape_use_case=scrape_use_case,
         audit_use_case=audit_use_case,
         audit_coverage_use_case=audit_coverage_use_case,
+        audit_mx_season_use_case=audit_mx_season_use_case,
+        inspect_match_use_case=inspect_match_use_case,
         pipeline_use_case=pipeline_use_case,
     )

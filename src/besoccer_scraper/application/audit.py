@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import uuid
+from typing import Any
+
+from sqlalchemy import text
 
 from besoccer_scraper.domain.entities import AuditEvent
 from besoccer_scraper.domain.repositories import UnitOfWork
@@ -56,3 +59,91 @@ class AuditCoverageUseCase:
             self.uow.job_runs.finish_run(run_id=run_id, status="failed")
             self.uow.commit()
             raise
+
+
+@dataclass
+class AuditMxSeasonUseCase:
+    uow: UnitOfWork
+
+    def execute(self, *, competition: str, year: int) -> dict[str, Any]:
+        season_key = str(year)
+        coverage = self.uow.scrape_targets.coverage_by_competition_season(competition=competition, season_key=season_key)
+
+        rows = self.uow.session.execute(
+            text(
+                """
+                SELECT COALESCE(st.payload ->> 'round_label', 'unknown') AS round_label, COUNT(*)::BIGINT AS total
+                FROM scrape_targets st
+                WHERE COALESCE(st.payload ->> 'competition', st.payload ->> 'competition_slug', st.payload ->> 'competition_id') = :competition
+                  AND COALESCE(st.payload ->> 'season_key', st.payload ->> 'season') = :season_key
+                GROUP BY 1
+                ORDER BY 1
+                """
+            ),
+            {"competition": competition, "season_key": season_key},
+        ).mappings()
+
+        rounds = {str(row["round_label"]): int(row["total"]) for row in rows}
+        expected_rounds = 17
+        expected_matches = 153
+        matches_total = int(coverage.get("matches_total", 0) or 0)
+
+        return {
+            "competition": competition,
+            "season_key": season_key,
+            "targets_total": int(coverage.get("targets_total", 0) or 0),
+            "status_breakdown": {
+                key: int(coverage.get(key, 0) or 0)
+                for key in ("pending", "in_progress", "parsed", "retry_scheduled", "blocked", "failed_permanent")
+            },
+            "matches_total": matches_total,
+            "rounds_detected": len(rounds),
+            "round_label_counts": rounds,
+            "duplicates_avoided": int(coverage.get("duplicates_detected", 0) or 0),
+            "expected_rounds": expected_rounds,
+            "expected_matches": expected_matches,
+            "gap_rounds": expected_rounds - len(rounds),
+            "gap_matches": expected_matches - matches_total,
+        }
+
+
+@dataclass
+class InspectMatchUseCase:
+    uow: UnitOfWork
+
+    def execute(self, *, source_match_id: str) -> dict[str, Any] | None:
+        row = self.uow.session.execute(
+            text("SELECT payload FROM matches WHERE source_match_id = :source_match_id ORDER BY id DESC LIMIT 1"),
+            {"source_match_id": source_match_id},
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+
+        payload = dict(row).get("payload") or {}
+        metadata = payload.get("metadata") or {}
+        stats = payload.get("stats_json") or {}
+        events = payload.get("events_json") or []
+
+        goals = [
+            {
+                "minute": event.get("minute"),
+                "minute_raw": event.get("minute_raw"),
+                "half": event.get("half"),
+                "player_name": event.get("player_name"),
+                "team_side": event.get("team_side"),
+            }
+            for event in events
+            if isinstance(event, dict) and event.get("event_type") == "goal"
+        ]
+
+        return {
+            "source_match_id": payload.get("source_match_id") or source_match_id,
+            "url": payload.get("url"),
+            "competition_slug": payload.get("competition_slug"),
+            "season_key": payload.get("season_key"),
+            "round_label": payload.get("round_label"),
+            "score": metadata.get("score"),
+            "metadata": metadata,
+            "stats_summary": {"total_metrics": len(stats), "keys": sorted(stats.keys())[:10]},
+            "goals": goals,
+        }
