@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from besoccer_scraper.domain.entities import Match
@@ -282,5 +282,5 @@ class MatchParser:
         if kickoff is None:
             return None
         if kickoff.tzinfo is None:
-            kickoff = kickoff.replace(tzinfo=UTC)
-        return kickoff.astimezone(UTC).isoformat().replace("+00:00", "Z")
+            kickoff = kickoff.replace(tzinfo=timezone.utc)
+        return kickoff.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
