@@ -65,7 +65,7 @@ class DiscoverMxSeasonUseCase:
         if self.expected_rounds is None:
             self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
 
-    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None) -> list[dict[str, str]]:
+    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
         competition_url = f"https://es.besoccer.com/competicion/resultados/{competition_slug}/{year}"
         force_browser = competition_slug in {"clausura_mexico", "apertura_mexico"}
@@ -76,7 +76,7 @@ class DiscoverMxSeasonUseCase:
         discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year) if use_browser else self._discover_by_rounds(competition_slug=competition_slug, season_key=season_key, competition_url=competition_url)
         if not discovered and not use_browser and self.use_browser_fallback:
             discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year)
-        if self._should_fallback(discovered):
+        if fallback_to_teams and self._should_fallback(discovered) and hasattr(self.team_use_case, "execute"):
             discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams)
 
         rows = list(discovered.values())

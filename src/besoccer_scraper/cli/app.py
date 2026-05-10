@@ -47,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     mx_season.add_argument("--debug", action="store_true", default=False)
     mx_season.add_argument("--browser", dest="browser", action="store_true", default=None)
     mx_season.add_argument("--no-browser", dest="browser", action="store_false")
+    mx_season.add_argument("--fallback-teams", dest="fallback_teams", action="store_true", default=None)
+    mx_season.add_argument("--no-fallback-teams", dest="fallback_teams", action="store_false")
 
     scrape = sub.add_parser("scrape")
     scrape_sub = scrape.add_subparsers(dest="scrape_mode")
