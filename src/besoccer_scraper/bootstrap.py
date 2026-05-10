@@ -4,7 +4,7 @@ from argparse import Namespace
 from dataclasses import dataclass
 
 from besoccer_scraper.application.audit import AuditRunUseCase
-from besoccer_scraper.application.discovery import DiscoverCompetitionsUseCase
+from besoccer_scraper.application.discovery import DiscoverCompetitionsUseCase, DiscoverMxSeasonUseCase, DiscoverMxTeamUseCase
 from besoccer_scraper.application.pipeline import PipelineUseCase
 from besoccer_scraper.application.scraping import ScrapeMatchesUseCase
 from besoccer_scraper.config.settings import Settings, load_settings
@@ -27,6 +27,8 @@ class Container:
     request_policy: RequestPolicy
     retry_policy: RetryPolicy
     discover_use_case: DiscoverCompetitionsUseCase
+    discover_mx_team_use_case: DiscoverMxTeamUseCase
+    discover_mx_season_use_case: DiscoverMxSeasonUseCase
     scrape_use_case: ScrapeMatchesUseCase
     audit_use_case: AuditRunUseCase
     pipeline_use_case: PipelineUseCase
@@ -41,6 +43,7 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     http_client = HttpClient(
         timeout_seconds=settings.http_timeout_seconds,
         user_agent=settings.user_agent,
+        max_retries=settings.max_retries,
     )
 
     competition_parser = CompetitionParser()
@@ -58,6 +61,15 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         parser=competition_parser,
         request_policy=request_policy,
     )
+    discover_mx_team_use_case = DiscoverMxTeamUseCase(
+        uow=uow,
+        http_client=http_client,
+        parser=matches_parser,
+    )
+    discover_mx_season_use_case = DiscoverMxSeasonUseCase(
+        team_use_case=discover_mx_team_use_case,
+    )
+
     scrape_use_case = ScrapeMatchesUseCase(
         uow=uow,
         http_client=http_client,
@@ -77,6 +89,8 @@ def build_container(cli_args: Namespace | None = None) -> Container:
         request_policy=request_policy,
         retry_policy=retry_policy,
         discover_use_case=discover_use_case,
+        discover_mx_team_use_case=discover_mx_team_use_case,
+        discover_mx_season_use_case=discover_mx_season_use_case,
         scrape_use_case=scrape_use_case,
         audit_use_case=audit_use_case,
         pipeline_use_case=pipeline_use_case,

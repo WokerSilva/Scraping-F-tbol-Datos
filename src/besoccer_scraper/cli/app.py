@@ -25,7 +25,28 @@ def build_parser() -> argparse.ArgumentParser:
     db.add_argument("action", choices=["check", "migrate", "status"], default="status", nargs="?")
 
     discover = sub.add_parser("discover")
-    discover.add_argument("--source-url", required=True)
+    discover_sub = discover.add_subparsers(dest="discover_mode")
+
+    discover_default = discover_sub.add_parser("default")
+    discover_default.set_defaults(discover_mode="default")
+    discover_default.add_argument("--source-url", required=True)
+
+    mx_team = discover_sub.add_parser("mx-team")
+    mx_team.set_defaults(discover_mode="mx-team")
+    mx_team.add_argument("--competition", required=True)
+    mx_team.add_argument("--year", type=int, required=True)
+    mx_team.add_argument("--team", required=True)
+    mx_team.add_argument("--dry-run", action="store_true", default=False)
+    mx_team.add_argument("--print-urls", action="store_true", default=False)
+
+    mx_season = discover_sub.add_parser("mx-season")
+    mx_season.set_defaults(discover_mode="mx-season")
+    mx_season.add_argument("--competition", required=True)
+    mx_season.add_argument("--year", type=int, required=True)
+    mx_season.add_argument("--max-teams", type=int, default=None)
+    mx_season.add_argument("--dry-run", action="store_true", default=False)
+    mx_season.add_argument("--persist", action="store_true", default=False)
+    mx_season.add_argument("--print-urls", action="store_true", default=False)
 
     scrape = sub.add_parser("scrape")
     scrape.add_argument("--competition-id", required=True)
@@ -49,7 +70,7 @@ def main(argv: list[str] | None = None) -> object:
     if args.command == "db":
         return run_db_command(container, args.action)
     if args.command == "discover":
-        return run_discover(container, args.source_url)
+        return run_discover(container, args)
     if args.command == "scrape":
         return run_scrape(container, args.competition_id, args.source_url)
     if args.command == "audit":
