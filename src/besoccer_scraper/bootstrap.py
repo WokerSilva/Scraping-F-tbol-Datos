@@ -74,6 +74,8 @@ def build_container(cli_args: Namespace | None = None) -> Container:
     )
     discover_mx_season_use_case = DiscoverMxSeasonUseCase(
         team_use_case=discover_mx_team_use_case,
+        competition_parser=competition_parser,
+        http_client=http_client,
     )
 
     discovery_season_repo: DiscoverySeasonTargetRepository = uow.scrape_targets
