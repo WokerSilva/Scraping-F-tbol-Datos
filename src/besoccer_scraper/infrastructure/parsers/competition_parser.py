@@ -13,6 +13,7 @@ _MATCH_PATH_RE = re.compile(r"/partido/.+?/(?P<id>\d{6,})(?:/)?$", re.IGNORECASE
 _MATCH_ID_FROM_ANCHOR_RE = re.compile(r"^match-(?P<id>\d{6,})$", re.IGNORECASE)
 _JSON_MATCHES_RE = re.compile(r"jsonMatches\((?P<args>[^)]*)\)", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"\d+")
+_ROUND_NUMBER_RE = re.compile(r"(\d+)")
 
 
 class CompetitionMatchPayload(TypedDict):
@@ -112,9 +113,10 @@ class CompetitionParser:
             label = option.get_text(" ", strip=True)
             if not label:
                 continue
-            rounds.append(label)
+            normalized = self._normalize_round_label(label)
+            rounds.append(normalized or label)
             if option.has_attr("selected"):
-                selected_round = label
+                selected_round = normalized or label
 
         if selected_round is None and rounds:
             selected_index = round_select.get("selectedIndex")
@@ -158,20 +160,13 @@ class CompetitionParser:
         seen_ids: set[str] = set()
         debug_enabled = os.getenv("BESOCCER_PARSER_DEBUG", "").lower() in {"1", "true", "yes"}
 
-        containers = [
-            "#mod_mainCompetitionRounds",
-            ".comp-matches",
-            ".panel-body.match-list-new",
-            "main",
-        ]
+        containers = ["#mod_mainCompetitionRounds", ".comp-matches", ".panel-body.match-list-new"]
         selector_parts = [
             'a[data-cy="match"][href*="/partido/"]',
             'a[id^="match-"][href*="/partido/"]',
             'a.match-link[href*="/partido/"]',
-            'a[href*="/partido/"]',
         ]
         selectors = [f"{container} {part}" for container in containers for part in selector_parts]
-        selectors.append('a[href*="/partido/"]')
         candidate_anchors = soup.select(",".join(selectors))
         if debug_enabled:
             total_partido = len(soup.select('a[href*="/partido/"]'))
@@ -219,6 +214,14 @@ class CompetitionParser:
         if debug_enabled:
             print(f"[competition_parser] parsed matches: {len(parsed)}")
         return parsed
+
+    @staticmethod
+    def _normalize_round_label(label: str) -> str:
+        text = (label or "").strip().upper()
+        match = _ROUND_NUMBER_RE.search(text)
+        if match:
+            return f"JORNADA{int(match.group(1))}"
+        return text
 
     def _normalize_match_url(self, href: str) -> str | None:
         path = urlparse(href).path.strip()

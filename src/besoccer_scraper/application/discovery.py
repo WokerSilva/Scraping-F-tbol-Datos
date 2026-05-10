@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from besoccer_scraper.config.league_catalog import get_league_config
 from besoccer_scraper.domain.policies import RequestPolicy
@@ -83,15 +84,17 @@ class DiscoverMxSeasonUseCase:
         if print_urls:
             grouped: dict[str, list[str]] = {}
             for row in rows:
-                grouped.setdefault(row["round_label"], []).append(row["url"])
-            for round_label in sorted(grouped.keys()):
+                normalized = self._normalize_round_label(str(row["round_label"]))
+                grouped.setdefault(normalized, []).append(row["url"])
+            for round_label in sorted(grouped.keys(), key=self._round_sort_key):
                 print(f"[{round_label}]")
                 for url in grouped[round_label]:
                     print(url)
 
-        rounds_detected = len(set(r["round_label"] for r in rows))
+        detected_rounds_set = {self._normalize_round_label(str(r["round_label"])) for r in rows}
+        rounds_detected = len(detected_rounds_set)
         rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
-        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in {r["round_label"] for r in rows}]
+        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
         coverage_status = "complete" if rounds_detected >= rounds_expected and len(rows) >= 140 else "partial"
         print(f"competition={competition_slug} year={year} season_key={season_key} url={competition_url} strategy=browser_competition_rounds rounds_expected={rounds_expected} rounds_detected={rounds_detected} missing_rounds={missing_rounds} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} coverage_status={coverage_status} persist={str(persist and not dry_run).lower()}")
         if persist and not dry_run and coverage_status == "partial":
@@ -120,7 +123,7 @@ class DiscoverMxSeasonUseCase:
                 relative_url = str(match.get("url", "")).strip()
                 if not source_match_id or not relative_url or source_match_id in discovered:
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": selected_round, "strategy": "competition_rounds_http", "source_page": page_url}
+                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(selected_round), "strategy": "competition_rounds_http", "source_page": page_url}
         return discovered
 
     def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int) -> dict[str, dict[str, str]]:
@@ -136,7 +139,7 @@ class DiscoverMxSeasonUseCase:
                     continue
                 if not self._is_competition_match(competition_slug, str(match.get("competition_name", ""))):
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": round_label, "strategy": "competition_rounds_browser", "source_page": competition_url}
+                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(round_label), "strategy": "competition_rounds_browser", "source_page": competition_url}
         return discovered
 
     @staticmethod
@@ -153,6 +156,19 @@ class DiscoverMxSeasonUseCase:
         expected = {"clausura_mexico": "liga mx - clausura", "apertura_mexico": "liga mx - apertura"}
         token = expected.get(competition_slug)
         return True if not token else token in name
+
+    @staticmethod
+    def _normalize_round_label(label: str) -> str:
+        text = (label or "").strip().upper()
+        match = re.search(r"(\d+)", text)
+        if match:
+            return f"JORNADA{int(match.group(1))}"
+        return text
+
+    @staticmethod
+    def _round_sort_key(label: str) -> tuple[int, str]:
+        m = re.search(r"(\d+)", label)
+        return (int(m.group(1)) if m else 9999, label)
 
     def _should_fallback(self, discovered: dict[str, dict[str, str]]) -> bool:
         return not discovered
