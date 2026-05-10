@@ -68,7 +68,7 @@ class DiscoverMxSeasonUseCase:
         if self.expected_rounds is None:
             self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
 
-    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False) -> list[dict[str, str]]:
+    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False, sample_size: int = 3, allow_partial: bool = False) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
         competition_url = f"https://es.besoccer.com/competicion/resultados/{competition_slug}/{year}"
         force_browser = competition_slug in {"clausura_mexico", "apertura_mexico"}
@@ -97,8 +97,23 @@ class DiscoverMxSeasonUseCase:
         rounds_detected = len(detected_rounds_set)
         rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
         missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
-        coverage_status = "complete" if rounds_detected >= rounds_expected and len(rows) >= 140 else "partial"
-        print(f"competition={competition_slug} year={year} season_key={season_key} url={competition_url} strategy=browser_competition_rounds rounds_expected={rounds_expected} rounds_detected={rounds_detected} missing_rounds={missing_rounds} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} coverage_status={coverage_status} persist={str(persist and not dry_run).lower()}")
+        coverage_status = "complete" if rounds_detected == rounds_expected and 145 <= len(rows) <= 160 else "partial"
+        print(f"competition={competition_slug}")
+        print(f"year={year}")
+        print(f"season_key={season_key}")
+        print("strategy=browser_dom_rounds")
+        print(f"rounds_expected={rounds_expected}")
+        print(f"rounds_detected={rounds_detected}")
+        print(f"targets_found={len(rows)}")
+        print(f"unique_match_ids={len({r['source_match_id'] for r in rows})}")
+        print(f"coverage_status={coverage_status}")
+        print(f"persist={str(persist and not dry_run).lower()}")
+        grouped_ids: dict[str, list[str]] = {}
+        for row in rows:
+            grouped_ids.setdefault(str(row["round_label"]), []).append(str(row["source_match_id"]))
+        for label in sorted(grouped_ids.keys(), key=self._round_sort_key):
+            sample = grouped_ids[label][:sample_size]
+            print(f"{label} count={len(grouped_ids[label])} sample_ids={sample}")
         if debug and not rows:
             debug_path = Path("data/snapshots/errors") / f"mx_season_{competition_slug}_{year}_summary.json"
             if debug_path.exists():
@@ -110,7 +125,7 @@ class DiscoverMxSeasonUseCase:
                 print(f"round_options_found={summary.get('round_options_found')}")
                 print(f"match_anchor_count_global={summary.get('match_anchor_count_global')}")
                 print(f"match_anchor_count_scoped={summary.get('match_anchor_count_scoped')}")
-        if persist and not dry_run and coverage_status == "partial":
+        if persist and not dry_run and coverage_status == "partial" and not allow_partial:
             return rows
         if persist and not dry_run:
             for row in rows:
@@ -143,19 +158,27 @@ class DiscoverMxSeasonUseCase:
         if not self.browser_renderer:
             return {}
         discovered: dict[str, dict[str, str]] = {}
-        rendered = self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year)
+        if hasattr(self.browser_renderer, "discover_rounds"):
+            rendered = self.browser_renderer.discover_rounds(url=competition_url, competition=competition_slug, year=year)
+        else:
+            rendered = [{"round_label": label, "matches": [], "html": html} for label, html in self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year)]
         parser_matches_by_round: dict[str, int] = {}
         rounds_attempted = 0
-        for round_label, html in rendered:
+        for round_result in rendered:
             rounds_attempted += 1
-            page = self.competition_parser.parse(html)
-            parser_matches_by_round[round_label] = len(page.get("matches", []))
-            for match in page.get("matches", []):
+            round_label = str(round_result.get("round_label", ""))
+            round_matches = list(round_result.get("matches", []))
+            if not round_matches and round_result.get("html"):
+                page = self.competition_parser.parse(str(round_result.get("html")))
+                round_matches = list(page.get("matches", []))
+            parser_matches_by_round[round_label] = len(round_matches)
+            for match in round_matches:
                 source_match_id = str(match.get("source_match_id", "")).strip()
                 relative_url = str(match.get("url", "")).strip()
                 if not source_match_id or not relative_url or source_match_id in discovered:
                     continue
-                if not self._is_competition_match(competition_slug, str(match.get("competition_name", ""))):
+                competition_name = str(match.get("competition_name", "")).strip()
+                if competition_name and not self._is_competition_match(competition_slug, competition_name):
                     continue
                 discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(round_label), "strategy": "competition_rounds_browser", "source_page": competition_url}
         if debug:
