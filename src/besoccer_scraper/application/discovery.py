@@ -68,9 +68,9 @@ class DiscoverMxSeasonUseCase:
         if browser is None and self.use_browser_fallback:
             use_browser = True
 
-        discovered = self._discover_by_browser(competition_slug, season_key, competition_url) if use_browser else self._discover_by_rounds(competition_slug=competition_slug, season_key=season_key, competition_url=competition_url)
+        discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year) if use_browser else self._discover_by_rounds(competition_slug=competition_slug, season_key=season_key, competition_url=competition_url)
         if not discovered and not use_browser and self.use_browser_fallback:
-            discovered = self._discover_by_browser(competition_slug, season_key, competition_url)
+            discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year)
         if self._should_fallback(discovered):
             discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams)
 
@@ -84,7 +84,7 @@ class DiscoverMxSeasonUseCase:
                 for url in grouped[round_label]:
                     print(url)
 
-        print(f"competition={competition_slug} year={year} source_page_url={competition_url} rounds_detected={len(set(r['round_label'] for r in rows))} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} persist={str(persist and not dry_run).lower()}")
+        print(f"competition={competition_slug} year={year} season_key={season_key} url={competition_url} strategy=browser_competition_rounds rounds_detected={len(set(r['round_label'] for r in rows))} targets_found={len(rows)} unique_match_ids={len({r['source_match_id'] for r in rows})} persist={str(persist and not dry_run).lower()}")
         if persist and not dry_run:
             for row in rows:
                 self.team_use_case.uow.scrape_targets.upsert_target(source_name="besoccer", target_type="match_page", url=row["url"], source_match_id=row["source_match_id"], payload={"source_competition_slug": competition_slug, "season_key": season_key, "round_label": row["round_label"], "status": "pending", "metadata_json": {"discovery_strategy": row["strategy"], "year": year, "source_page_url": competition_url}})
@@ -112,11 +112,11 @@ class DiscoverMxSeasonUseCase:
                 discovered[source_match_id] = {"source_match_id": source_match_id, "url": f"https://es.besoccer.com{relative_url}", "source_competition_slug": competition_slug, "season_key": season_key, "round_label": selected_round, "strategy": "competition_rounds_http", "source_page": page_url}
         return discovered
 
-    def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str) -> dict[str, dict[str, str]]:
+    def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int) -> dict[str, dict[str, str]]:
         if not self.browser_renderer:
             return {}
         discovered: dict[str, dict[str, str]] = {}
-        for round_label, html in self.browser_renderer.render_round_pages(url=competition_url):
+        for round_label, html in self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year):
             page = self.competition_parser.parse(html)
             for match in page.get("matches", []):
                 source_match_id = str(match.get("source_match_id", "")).strip()

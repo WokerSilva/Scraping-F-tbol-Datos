@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from besoccer_scraper.shared.exceptions import ScrapeBlockedError
+import json
+from pathlib import Path
+import re
+
+from besoccer_scraper.shared.exceptions import HttpFetchError, ScrapeBlockedError
 
 
 def run_discover(container: object, args: object) -> int:
@@ -32,6 +36,25 @@ def run_discover(container: object, args: object) -> int:
                 print("BeSoccer rechazó la petición HTTP simple (406). Reintenta con browser fallback o USE_BROWSER_FALLBACK=true.")
             else:
                 print(f"Discovery bloqueado por BeSoccer (status={exc.status_code}).")
+            return 2
+        except HttpFetchError as exc:
+            print(str(exc))
+            if getattr(args, "debug", False):
+                marker = "Debug snapshot: "
+                message = str(exc)
+                if marker in message:
+                    match = re.search(r"Debug snapshot:\s*([^\s]+\.json)", message)
+                    meta_path = match.group(1) if match else ""
+                    path = Path(meta_path)
+                    if path.exists():
+                        meta = json.loads(path.read_text(encoding="utf-8"))
+                        print(f"debug_html={meta.get('html_path')}")
+                        print(f"debug_screenshot={meta.get('screenshot_path')}")
+                        print(f"response_status={meta.get('response_status')}")
+                        print(f"final_url={meta.get('final_url')}")
+                        print(f"html_length={meta.get('html_length')}")
+                        print(f"body_text_length={meta.get('body_text_length')}")
+                        print(f"match_anchor_count={meta.get('match_anchor_count')}")
             return 2
         return len(rows)
 
