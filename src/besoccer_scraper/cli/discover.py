@@ -14,17 +14,15 @@ def run_discover(container: object, args: object) -> int:
         return len(rows)
 
     if args.discover_mode == "mx-season":
-        dry_run = not args.persist
+        dry_run = args.dry_run or not args.persist
         rows = container.discover_mx_season_use_case.execute(
             competition_slug=args.competition,
             year=args.year,
             max_teams=args.max_teams,
             dry_run=dry_run,
             persist=args.persist,
+            print_urls=args.print_urls,
         )
-        if args.print_urls:
-            for row in rows:
-                print(row["url"])
         return len(rows)
 
     return container.discover_use_case.execute(args.source_url)
