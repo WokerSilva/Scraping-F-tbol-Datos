@@ -46,11 +46,11 @@ class ScrapeTargetsRepository(BaseRepository):
                 SELECT
                     st.source_match_id,
                     st.status,
-                    st.payload
+                    st.url
                 FROM scrape_targets st
                 WHERE
-                    COALESCE(st.payload ->> 'competition', st.payload ->> 'competition_slug', st.payload ->> 'competition_id') = :competition
-                    AND COALESCE(st.payload ->> 'season_key', st.payload ->> 'season') = :season_key
+                    st.source_competition_slug = :competition
+                    AND st.season_key = :season_key
             ),
             duplicates AS (
                 SELECT COUNT(*)::BIGINT AS duplicates_detected
@@ -74,14 +74,14 @@ class ScrapeTargetsRepository(BaseRepository):
                     SELECT COUNT(*)::BIGINT
                     FROM matches m
                     WHERE
-                        COALESCE(m.payload ->> 'competition', m.payload ->> 'competition_slug', m.competition_id) = :competition
-                        AND COALESCE(m.payload ->> 'season_key', m.payload ->> 'season') = :season_key
+                        m.source_competition_slug = :competition
+                        AND m.season_key = :season_key
                 ) AS matches_total,
                 (
                     SELECT COUNT(*)::BIGINT
                     FROM raw_pages rp
                     WHERE rp.url IN (
-                        SELECT COALESCE(tb.payload ->> 'url', tb.payload ->> 'source_url')
+                        SELECT tb.url
                         FROM target_base tb
                     )
                 ) AS raw_pages_total,
@@ -149,15 +149,20 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
     def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> int:
         query = text(
             """
-            INSERT INTO scrape_targets (source_name, target_type, url, source_match_id, payload)
-            VALUES (:source_name, :target_type, :url, :source_match_id, :payload)
+            INSERT INTO scrape_targets (source_name, target_type, url, source_match_id, source_competition_slug, season_key, round_label, status, metadata_json)
+            VALUES (:source_name, :target_type, :url, :source_match_id, :source_competition_slug, :season_key, :round_label, :status, :metadata_json)
             ON CONFLICT (source_name, target_type, url)
             DO UPDATE SET
                 source_match_id = EXCLUDED.source_match_id,
-                payload = EXCLUDED.payload
+                source_competition_slug = EXCLUDED.source_competition_slug,
+                season_key = EXCLUDED.season_key,
+                round_label = EXCLUDED.round_label,
+                status = EXCLUDED.status,
+                metadata_json = EXCLUDED.metadata_json,
+                updated_at = NOW()
             RETURNING id
             """
-        ).bindparams(bindparam("payload", type_=JSONB))
+        ).bindparams(bindparam("metadata_json", type_=JSONB))
         row = self.session.execute(
             query,
             {
@@ -165,7 +170,11 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 "target_type": target_type,
                 "url": url,
                 "source_match_id": source_match_id,
-                "payload": payload,
+                "source_competition_slug": payload.get("source_competition_slug") or payload.get("competition"),
+                "season_key": payload.get("season_key"),
+                "round_label": payload.get("round_label"),
+                "status": payload.get("status", "pending"),
+                "metadata_json": payload.get("metadata_json") or payload,
             },
         ).one()
         return int(row[0])
@@ -179,12 +188,12 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 target_type,
                 url,
                 source_match_id,
-                payload,
-                COALESCE(payload ->> 'competition', payload ->> 'competition_slug') AS competition_slug,
-                payload ->> 'round_label' AS round_label,
-                COALESCE(payload ->> 'season_key', payload ->> 'season') AS season_key
+                metadata_json,
+                source_competition_slug AS competition_slug,
+                round_label,
+                season_key
             FROM scrape_targets
-            WHERE COALESCE(payload ->> 'status', 'pending') IN ('pending', 'discovered', 'retry_scheduled')
+            WHERE status IN ('pending', 'discovered', 'retry_scheduled')
             ORDER BY id
             LIMIT :limit
             """
@@ -217,10 +226,9 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
         query = text(
             """
             UPDATE scrape_targets
-            SET payload = COALESCE(payload, '{}'::jsonb) ||
-                jsonb_build_object('status', :to_status, 'updated_at', NOW(), 'error', :error)
+            SET status = :to_status, last_error = :error, updated_at = NOW()
             WHERE id = :target_id
-              AND COALESCE(payload ->> 'status', 'pending') = ANY(:from_statuses)
+              AND status = ANY(:from_statuses)
             """
         )
         result = self.session.execute(
@@ -232,9 +240,9 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
     def count_by_status(self) -> dict[str, int]:
         query = text(
             """
-            SELECT COALESCE(payload ->> 'status', 'pending') AS status, COUNT(*)::BIGINT AS total
+            SELECT status, COUNT(*)::BIGINT AS total
             FROM scrape_targets
-            GROUP BY COALESCE(payload ->> 'status', 'pending')
+            GROUP BY status
             """
         )
         return {str(row["status"]): int(row["total"]) for row in self.session.execute(query).mappings()}
@@ -244,8 +252,8 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
             """
             SELECT COUNT(*)::BIGINT AS total
             FROM scrape_targets
-            WHERE COALESCE(payload ->> 'competition', payload ->> 'competition_slug', payload ->> 'competition_id') = :competition
-              AND COALESCE(payload ->> 'season_key', payload ->> 'season') = :season_key
+            WHERE source_competition_slug = :competition
+              AND season_key = :season_key
             """
         )
         row = self.session.execute(query, {"competition": competition, "season_key": season_key}).one()
@@ -309,7 +317,7 @@ class PostgresMatchRepository(MatchesRepository):
             DO UPDATE SET season_id = EXCLUDED.season_id, payload = EXCLUDED.payload
             RETURNING id
             """
-        ).bindparams(bindparam("payload", type_=JSONB))
+        ).bindparams(bindparam("metadata_json", type_=JSONB))
         row = self.session.execute(
             query,
             {"source_id": source_id, "source_match_id": source_match_id, "season_id": season_id, "payload": payload},
