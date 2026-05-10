@@ -38,10 +38,16 @@ def run_discover(container: object, args: object) -> int:
                 print(f"Discovery bloqueado por BeSoccer (status={exc.status_code}).")
             return 2
         except HttpFetchError as exc:
-            print(str(exc))
+            message = str(exc)
+            if "External navigation blocked/detected:" in message:
+                external_url = message.split("External navigation blocked/detected:", 1)[1].strip()
+                print("Se bloqueó navegación externa durante render BeSoccer.")
+                print(f"URL externa: {external_url}")
+                print("Reintenta; si persiste, revisar network log.")
+            else:
+                print(message)
             if getattr(args, "debug", False):
                 marker = "Debug snapshot: "
-                message = str(exc)
                 if marker in message:
                     match = re.search(r"Debug snapshot:\s*([^\s]+\.json)", message)
                     meta_path = match.group(1) if match else ""
