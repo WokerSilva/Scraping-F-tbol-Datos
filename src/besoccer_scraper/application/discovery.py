@@ -126,11 +126,29 @@ class DiscoverMxSeasonUseCase:
                 print(f"match_anchor_count_global={summary.get('match_anchor_count_global')}")
                 print(f"match_anchor_count_scoped={summary.get('match_anchor_count_scoped')}")
         if persist and not dry_run and coverage_status == "partial" and not allow_partial:
+            print("Discovery parcial: no se persiste sin --allow-partial")
+            print(f"missing_rounds={missing_rounds}")
+            print("persist=false")
             return rows
         if persist and not dry_run:
+            inserted = 0
+            updated = 0
+            skipped_existing = 0
             for row in rows:
-                self.team_use_case.uow.scrape_targets.upsert_target(source_name="besoccer", target_type="match_page", url=row["url"], source_match_id=row["source_match_id"], payload={"source_competition_slug": competition_slug, "season_key": season_key, "round_label": row["round_label"], "status": "pending", "metadata_json": {"discovery_strategy": row["strategy"], "year": year, "source_page_url": competition_url}})
+                outcome = self.team_use_case.uow.scrape_targets.upsert_target(source_name="besoccer", target_type="match_page", url=row["url"], source_match_id=row["source_match_id"], payload={"source_competition_slug": competition_slug, "season_key": season_key, "round_label": row["round_label"], "status": "pending", "metadata_json": {"discovery_strategy": "browser_dom_rounds", "coverage_status": coverage_status, "year": year, "competition": competition_slug}})
+                if isinstance(outcome, dict):
+                    inserted += 1 if outcome.get("inserted") else 0
+                    updated += 1 if outcome.get("updated") else 0
+                else:
+                    inserted += 1
             self.team_use_case.uow.commit()
+            db_total = self.team_use_case.uow.scrape_targets.count_by_competition_season(competition=competition_slug, season_key=season_key)
+            print(f"inserted={inserted}")
+            print(f"updated={updated}")
+            print(f"skipped_existing={skipped_existing}")
+            print(f"db_total_for_season={db_total}")
+            if (inserted + updated) > 0 and db_total == 0:
+                raise RuntimeError("Persist verification failed: targets were written but audit filter cannot see them")
         return rows
 
     def _discover_by_rounds(self, *, competition_slug: str, season_key: str, competition_url: str) -> dict[str, dict[str, str]]:

@@ -23,7 +23,7 @@ def test_target_repository_upsert_list_count_and_transitions() -> None:
         session.commit()
 
         repo = PostgresTargetRepository(session)
-        target_id = repo.upsert_target(
+        upsert_1 = repo.upsert_target(
             source_name="besoccer",
             target_type="match",
             url="https://www.besoccer.com/partido/a/b/2022305526",
@@ -32,7 +32,7 @@ def test_target_repository_upsert_list_count_and_transitions() -> None:
         )
         session.commit()
 
-        updated_id = repo.upsert_target(
+        upsert_2 = repo.upsert_target(
             source_name="besoccer",
             target_type="match",
             url="https://www.besoccer.com/partido/a/b/2022305526",
@@ -41,13 +41,13 @@ def test_target_repository_upsert_list_count_and_transitions() -> None:
         )
         session.commit()
 
-        assert target_id == updated_id
+        assert upsert_1["id"] == upsert_2["id"]
         assert len(repo.list_for_processing(limit=10)) == 1
         assert repo.count_by_competition_season(competition="liga_mx", season_key="clausura-2025") == 1
 
-        assert repo.mark_transition(target_id=target_id, from_statuses=("discovered",), to_status="in_progress") is True
-        assert repo.mark_transition(target_id=target_id, from_statuses=("pending",), to_status="parsed") is False
-        assert repo.mark_transition(target_id=target_id, from_statuses=("in_progress",), to_status="parsed") is True
+        assert repo.mark_transition(target_id=upsert_1["id"], from_statuses=("discovered",), to_status="in_progress") is True
+        assert repo.mark_transition(target_id=upsert_1["id"], from_statuses=("pending",), to_status="parsed") is False
+        assert repo.mark_transition(target_id=upsert_1["id"], from_statuses=("in_progress",), to_status="parsed") is True
         session.commit()
 
         counts = repo.count_by_status()
