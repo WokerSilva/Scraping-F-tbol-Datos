@@ -190,6 +190,14 @@ class ScrapeMatchesUseCase:
             status_code=payload["status_code"],
             metadata={"fetched_at": payload["fetched_at"].isoformat()},
         )
+        return True
+
+    def _save_debug_html(self, *, target: dict[str, Any], html: str) -> str:
+        source_match_id = str(target.get("source_match_id") or target.get("id") or "unknown")
+        path = Path("data/snapshots/match_pages") / f"match_{source_match_id}.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+        return str(path)
 
     def _save_debug_html(self, *, target: dict[str, Any], html: str) -> str:
         source_match_id = str(target.get("source_match_id") or target.get("id") or "unknown")
