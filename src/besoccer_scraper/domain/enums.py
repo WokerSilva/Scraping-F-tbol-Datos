@@ -3,9 +3,11 @@ from enum import Enum
 
 class TargetStatus(str, Enum):
     PENDING = "pending"
-    RETRY_SCHEDULED = "retry_scheduled"
     IN_PROGRESS = "in_progress"
     PARSED = "parsed"
+    RETRY_SCHEDULED = "retry_scheduled"
+    BLOCKED = "blocked"
+    FAILED_PERMANENT = "failed_permanent"
     FAILED = "failed"
 
 
