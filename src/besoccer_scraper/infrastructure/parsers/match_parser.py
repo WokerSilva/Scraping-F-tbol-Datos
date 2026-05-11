@@ -38,9 +38,16 @@ class MatchParser:
         page_data = self._extract_page_data(html)
 
         fallback_round = self._extract_round_from_text(html)
+        derived_season_key = self._derive_season_key(
+            season_key=season_key,
+            round_label=round_label,
+            competition_slug=competition_slug,
+            kickoff_at=kickoff_at,
+            page_data=page_data,
+        )
         metadata = {
             "competition_name": self._extract_metadata_value(page_data, ("competition_name", "competitionName", "leagueName")),
-            "season_key": season_key
+            "season_key": derived_season_key
             or self._extract_metadata_value(page_data, ("season_key", "seasonKey", "season", "season_name")),
             "round_label": round_label
             or self._extract_metadata_value(page_data, ("round_label", "roundLabel", "matchday", "journey", "round")),
@@ -331,3 +338,61 @@ class MatchParser:
         if kickoff.tzinfo is None:
             kickoff = kickoff.replace(tzinfo=timezone.utc)
         return kickoff.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _derive_season_key(
+        self,
+        *,
+        season_key: str | None,
+        round_label: str | None,
+        competition_slug: str,
+        kickoff_at: datetime | None,
+        page_data: dict[str, Any],
+    ) -> str:
+        if season_key:
+            return self._normalize_season_key(competition_slug=competition_slug, season_key=season_key)
+
+        kickoff_year = self._extract_year_from_datetime(kickoff_at)
+        if kickoff_year is None:
+            kickoff_year = self._extract_year_from_iso(self._extract_metadata_value(page_data, ("startDate",)))
+        if kickoff_year is not None:
+            base_key = f"{competition_slug}-{kickoff_year}"
+            if round_label:
+                base_key = f"{competition_slug}-{round_label}-{kickoff_year}"
+            return self._normalize_season_key(competition_slug=competition_slug, season_key=base_key)
+
+        match_date_utc = self._extract_metadata_value(page_data, ("match_date_utc",))
+        json_ld_year = self._extract_year_from_iso(match_date_utc)
+        if json_ld_year is not None:
+            return self._normalize_season_key(competition_slug=competition_slug, season_key=f"{competition_slug}-{json_ld_year}")
+
+        current_utc_year = datetime.now(timezone.utc).year
+        return self._normalize_season_key(competition_slug=competition_slug, season_key=f"{competition_slug}-{current_utc_year}")
+
+    @staticmethod
+    def _extract_year_from_datetime(value: datetime | None) -> int | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).year
+
+    @staticmethod
+    def _extract_year_from_iso(value: str | None) -> int | None:
+        if not value:
+            return None
+        raw = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).year
+
+    @staticmethod
+    def _normalize_season_key(*, competition_slug: str, season_key: str) -> str:
+        if competition_slug == "clausura_mexico":
+            year_match = re.search(r"(20\d{2})", season_key)
+            year = year_match.group(1) if year_match else str(datetime.now(timezone.utc).year)
+            return f"clausura-{year}"
+        return season_key

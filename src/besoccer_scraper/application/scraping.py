@@ -95,6 +95,7 @@ class ScrapeMatchesUseCase:
         url: str,
         competition_slug: str,
         round_label: str | None = None,
+        season_key: str | None = None,
         debug_html: bool = False,
         target_id: int | None = None,
     ) -> dict[str, Any]:
@@ -110,6 +111,7 @@ class ScrapeMatchesUseCase:
             url=url,
             competition_slug=competition_slug,
             round_label=round_label,
+            season_key=season_key,
         )
         parsed_match.payload["raw_page_id"] = raw_page_id
         self._upsert_parsed_match(parsed_match)
