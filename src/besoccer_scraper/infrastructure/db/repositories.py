@@ -7,6 +7,8 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
+from besoccer_scraper.domain.entities import Match
+
 
 class BaseRepository:
     table_name: str
@@ -146,7 +148,7 @@ class RunLocksRepository(BaseRepository):
 
 
 class PostgresTargetRepository(ScrapeTargetsRepository):
-    def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> int:
+    def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
         query = text(
             """
             INSERT INTO scrape_targets (source_name, target_type, url, source_match_id, source_competition_slug, season_key, round_label, status, metadata_json)
@@ -160,7 +162,7 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 status = EXCLUDED.status,
                 metadata_json = EXCLUDED.metadata_json,
                 updated_at = NOW()
-            RETURNING id
+            RETURNING id, (xmax = 0) AS inserted
             """
         ).bindparams(bindparam("metadata_json", type_=JSONB))
         row = self.session.execute(
@@ -177,7 +179,21 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 "metadata_json": payload.get("metadata_json") or payload,
             },
         ).one()
-        return int(row[0])
+        return {"id": int(row[0]), "inserted": bool(row[1]), "updated": not bool(row[1])}
+
+    def list_recent_by_competition_season(self, *, competition: str, season_key: str, limit: int = 10) -> list[dict[str, Any]]:
+        query = text(
+            """
+            SELECT id, source_match_id, round_label, status, url
+            FROM scrape_targets
+            WHERE source_name = 'besoccer'
+              AND source_competition_slug = :competition
+              AND season_key = :season_key
+            ORDER BY id DESC
+            LIMIT :limit
+            """
+        )
+        return list(self.session.execute(query, {"competition": competition, "season_key": season_key, "limit": limit}).mappings())
 
     def list_for_processing(self, *, limit: int) -> list[dict[str, Any]]:
         query = text(
@@ -308,6 +324,15 @@ class PostgresRawPageRepository(RawPagesRepository):
 
 
 class PostgresMatchRepository(MatchesRepository):
+    def upsert_many(self, matches: list[Match]) -> int:
+        count = 0
+        for match in matches:
+            payload = dict(match.payload or {})
+            source_id = int(payload.get("source_id") or 1)
+            self.upsert_match(source_id=source_id, source_match_id=str(match.external_id), payload=payload, season_id=None)
+            count += 1
+        return count
+
     def upsert_match(self, *, source_id: int, source_match_id: str, payload: dict[str, Any], season_id: int | None = None) -> int:
         query = text(
             """
