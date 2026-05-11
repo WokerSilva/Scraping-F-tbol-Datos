@@ -51,7 +51,8 @@ class ScrapeMatchesUseCase:
                 if debug_html:
                     debug_path = self._save_debug_html(target=target, html=html)
                     print(f"Debug HTML saved: {debug_path}")
-                if self._save_raw_page(target_url, html, enabled=True):
+                raw_page_id = self._save_raw_page(target_url, html, enabled=True)
+                if raw_page_id is not None:
                     counters["raw_pages_saved"] += 1
                 parsed_match = self.parser.parse_match(
                     html,
@@ -60,7 +61,8 @@ class ScrapeMatchesUseCase:
                     round_label=target.get("round_label"),
                     season_key=season_key or target.get("season_key"),
                 )
-                self.uow.matches.upsert_many([parsed_match])
+                parsed_match.payload["raw_page_id"] = raw_page_id
+                self._upsert_parsed_match(parsed_match)
                 counters["matches_upserted"] += 1
                 self._mark_target(target_id, TargetStatus.PARSED)
                 counters["parsed"] += 1
@@ -93,16 +95,19 @@ class ScrapeMatchesUseCase:
     ) -> dict[str, Any]:
         run_id = self.uow.job_runs.start_run(job_name="scrape.match")
         html = self.http_client.get(url)
+        debug_path = None
         if debug_html:
-            print(html[:1000])
-        self._save_raw_page(url, html, enabled=True)
+            debug_path = self._save_debug_html(target={"source_match_id": self._extract_source_match_id(url)}, html=html)
+            print(f"Debug HTML saved: {debug_path}")
+        raw_page_id = self._save_raw_page(url, html, enabled=True)
         parsed_match = self.parser.parse_match(
             html,
             url=url,
             competition_slug=competition_slug,
             round_label=round_label,
         )
-        self.uow.matches.upsert_many([parsed_match])
+        parsed_match.payload["raw_page_id"] = raw_page_id
+        self._upsert_parsed_match(parsed_match)
         if target_id is not None:
             self._mark_target(target_id, TargetStatus.PARSED)
         payload = parsed_match.payload
@@ -115,6 +120,8 @@ class ScrapeMatchesUseCase:
             "score": (payload.get("metadata") or {}).get("score"),
             "stats_count": stats_count,
             "events_count": events_count,
+            "raw_page_id": raw_page_id,
+            "debug_html_path": debug_path,
         }
         self.uow.job_runs.log_event(run_id=run_id, event_type="match_parsed", payload=summary)
         self.uow.job_runs.finish_run(run_id=run_id, status="success", stats=summary)
@@ -164,9 +171,9 @@ class ScrapeMatchesUseCase:
             )
         raise ValueError(f"Unsupported target status transition to {status.value}")
 
-    def _save_raw_page(self, url: str, html: str, *, enabled: bool) -> bool:
+    def _save_raw_page(self, url: str, html: str, *, enabled: bool) -> int | None:
         if not enabled:
-            return False
+            return None
         payload = {
             "source_name": "besoccer",
             "url": url,
@@ -175,7 +182,7 @@ class ScrapeMatchesUseCase:
             "status_code": 200,
             "fetched_at": datetime.now(timezone.utc),
         }
-        self.uow.raw_pages.save_raw_page(
+        return self.uow.raw_pages.save_raw_page(
             source_name=payload["source_name"],
             url=payload["url"],
             content_hash=payload["body_hash"],
@@ -191,6 +198,26 @@ class ScrapeMatchesUseCase:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(html, encoding="utf-8")
         return str(path)
+
+    def _save_debug_html(self, *, target: dict[str, Any], html: str) -> str:
+        source_match_id = str(target.get("source_match_id") or target.get("id") or "unknown")
+        path = Path("data/snapshots/match_pages") / f"match_{source_match_id}.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+        return str(path)
+
+    @staticmethod
+    def _extract_source_match_id(url: str) -> str:
+        parts = [p for p in str(url).split("/") if p]
+        return parts[-1] if parts else "unknown"
+
+    def _upsert_parsed_match(self, parsed_match: Any) -> Any:
+        repo = self.uow.matches
+        if hasattr(repo, "upsert_match"):
+            payload = dict(getattr(parsed_match, "payload", {}) or {})
+            source_id = int(payload.get("source_id") or 1)
+            return repo.upsert_match(source_id=source_id, source_match_id=str(getattr(parsed_match, "external_id", payload.get("source_match_id") or "")), payload=payload, season_id=None)
+        return repo.upsert_many([parsed_match])
 
     def _is_raw_enabled(self) -> bool:
         return self.save_raw_pages or str(os.getenv("SAVE_RAW_PAGES", "")).strip().lower() in {"1", "true", "yes", "on"}

@@ -7,6 +7,8 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
+from besoccer_scraper.domain.entities import Match
+
 
 class BaseRepository:
     table_name: str
@@ -322,6 +324,15 @@ class PostgresRawPageRepository(RawPagesRepository):
 
 
 class PostgresMatchRepository(MatchesRepository):
+    def upsert_many(self, matches: list[Match]) -> int:
+        count = 0
+        for match in matches:
+            payload = dict(match.payload or {})
+            source_id = int(payload.get("source_id") or 1)
+            self.upsert_match(source_id=source_id, source_match_id=str(match.external_id), payload=payload, season_id=None)
+            count += 1
+        return count
+
     def upsert_match(self, *, source_id: int, source_match_id: str, payload: dict[str, Any], season_id: int | None = None) -> int:
         query = text(
             """
