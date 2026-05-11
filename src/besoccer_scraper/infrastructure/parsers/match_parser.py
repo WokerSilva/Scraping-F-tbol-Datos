@@ -270,26 +270,27 @@ class MatchParser:
         return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        raw_events = self._deep_find(payload, "events") or self._deep_find(payload, "timeline") or []
+        goals_section = re.search(r'id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
         events: list[dict[str, Any]] = []
+
+        # Prioridad: usar solo el bloque textual de goles cuando exista.
+        if goals_section:
+            body = goals_section.group("body")
+            chunks = re.findall(r"(\d{1,3}(?:\+\d+)?'[^']*?)(?=\d{1,3}(?:\+\d+)?'|$)", body, flags=re.IGNORECASE)
+            for line in chunks:
+                parsed = self._build_goal_event({"type": "goal", "text": line.strip()})
+                if parsed is not None:
+                    events.append(parsed)
+            return self._dedupe_goal_events(events)
+
+        # Fallback: timeline JSON filtrando tipos estrictos de gol.
+        raw_events = self._deep_find(payload, "events") or self._deep_find(payload, "timeline") or []
         if isinstance(raw_events, list):
             for event in raw_events:
                 parsed = self._build_goal_event(event)
                 if parsed is not None:
                     events.append(parsed)
-
-        if events:
-            return events
-
-        # Fallback extraction from plain-text timeline strings.
-        goals_section = re.search(r'id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
-        body = goals_section.group("body") if goals_section else html
-        chunks = re.findall(r"(\d{1,3}(?:\+\d+)?'[^']*?)(?=\d{1,3}(?:\+\d+)?'|$)", body, flags=re.IGNORECASE)
-        for line in chunks:
-            parsed = self._build_goal_event({"type": "goal", "text": line.strip()})
-            if parsed:
-                events.append(parsed)
-        return events
+        return self._dedupe_goal_events(events)
 
     @staticmethod
     def _extract_canonical(html: str) -> str | None:
@@ -323,25 +324,81 @@ class MatchParser:
             return None
         event_type = str(event.get("type") or event.get("eventType") or event.get("name") or "").lower()
         text = str(event.get("text") or event.get("description") or "").strip()
-        if "goal" not in event_type and "gol" not in event_type and "goal" not in text.lower() and "gol" not in text.lower():
+        lowered_text = text.lower()
+        if not self._is_strict_goal_event(event_type=event_type, text=lowered_text):
             return None
 
         minute_raw = str(event.get("minute") or event.get("time") or self._extract_minute_from_text(text) or "").strip()
         minute, added_time = self._parse_minute(minute_raw)
-        lowered_text = text.lower()
+        player_name = event.get("player") or event.get("playerName") or event.get("name") or None
+        if not player_name:
+            player_name = self._extract_player_name_from_text(text)
+
         return {
             "event_type": "goal",
             "minute_raw": minute_raw or None,
             "minute": minute,
             "added_time": added_time,
             "half": self.classify_half_by_minute(minute=minute, added_time=added_time, raw_text=text),
-            "player_name": event.get("player") or event.get("playerName") or None,
-            "team_side": self._normalize_team_side(event.get("team") or event.get("side") or event.get("teamSide")),
+            "player_name": player_name,
+            "team_side": self._normalize_team_side(event.get("team") or event.get("side") or event.get("teamSide")) or "unknown",
             "score_after": event.get("score") or event.get("scoreAfter") or None,
             "is_own_goal": "own goal" in lowered_text or "en propia" in lowered_text,
             "is_penalty": "pen" in lowered_text,
             "raw_text": text or None,
         }
+
+    @staticmethod
+    def _is_strict_goal_event(*, event_type: str, text: str) -> bool:
+        goal_tokens = ("goal", "gol", "penalty scored", "own goal", "en propia")
+        if not any(token in event_type for token in goal_tokens) and not any(token in text for token in goal_tokens):
+            return False
+        blocked_tokens = (
+            "substitution",
+            "substitucion",
+            "substitución",
+            "yellow",
+            "red card",
+            "tarjeta",
+            "injury",
+            "lesion",
+            "lesión",
+        )
+        return not any(token in event_type or token in text for token in blocked_tokens)
+
+    @staticmethod
+    def _extract_player_name_from_text(text: str) -> str | None:
+        if not text:
+            return None
+        cleaned = re.sub(r"^\s*\d{1,3}(?:\+\d+)?'\s*", "", text).strip()
+        cleaned = re.sub(r"\b(goal|gol|penalty\s+scored|own\s+goal)\b.*$", "", cleaned, flags=re.I).strip(" -,:;")
+        return cleaned or None
+
+    def _dedupe_goal_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[Any, ...]] = set()
+        for event in events:
+            minute_key = self._normalize_minute_key(event.get("minute"), event.get("added_time"), event.get("minute_raw"))
+            player_key = re.sub(r"\s+", " ", str(event.get("player_name") or "").strip().lower())
+            key = (minute_key, player_key, str(event.get("event_type") or "").strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(event)
+        return deduped
+
+    @staticmethod
+    def _normalize_minute_key(minute: Any, added_time: Any, minute_raw: Any) -> str:
+        if isinstance(minute, int):
+            if isinstance(added_time, int):
+                return f"{minute}+{added_time}"
+            return str(minute)
+        parsed_minute, parsed_added = MatchParser._parse_minute(str(minute_raw or ""))
+        if parsed_minute is None:
+            return ""
+        if parsed_added is not None:
+            return f"{parsed_minute}+{parsed_added}"
+        return str(parsed_minute)
 
     @staticmethod
     def classify_half_by_minute(minute: int | None, added_time: int | None, raw_text: str | None = None) -> str:
