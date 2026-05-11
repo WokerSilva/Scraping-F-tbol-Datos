@@ -219,6 +219,26 @@ class ScrapeMatchesUseCase:
             return repo.upsert_match(source_id=source_id, source_match_id=str(getattr(parsed_match, "external_id", payload.get("source_match_id") or "")), payload=payload, season_id=None)
         return repo.upsert_many([parsed_match])
 
+    def _save_debug_html(self, *, target: dict[str, Any], html: str) -> str:
+        source_match_id = str(target.get("source_match_id") or target.get("id") or "unknown")
+        path = Path("data/snapshots/match_pages") / f"match_{source_match_id}.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+        return str(path)
+
+    @staticmethod
+    def _extract_source_match_id(url: str) -> str:
+        parts = [p for p in str(url).split("/") if p]
+        return parts[-1] if parts else "unknown"
+
+    def _upsert_parsed_match(self, parsed_match: Any) -> Any:
+        repo = self.uow.matches
+        if hasattr(repo, "upsert_match"):
+            payload = dict(getattr(parsed_match, "payload", {}) or {})
+            source_id = int(payload.get("source_id") or 1)
+            return repo.upsert_match(source_id=source_id, source_match_id=str(getattr(parsed_match, "external_id", payload.get("source_match_id") or "")), payload=payload, season_id=None)
+        return repo.upsert_many([parsed_match])
+
     def _is_raw_enabled(self) -> bool:
         return self.save_raw_pages or str(os.getenv("SAVE_RAW_PAGES", "")).strip().lower() in {"1", "true", "yes", "on"}
 

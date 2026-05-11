@@ -334,18 +334,73 @@ class PostgresMatchRepository(MatchesRepository):
         return count
 
     def upsert_match(self, *, source_id: int, source_match_id: str, payload: dict[str, Any], season_id: int | None = None) -> int:
+        metadata = payload.get("metadata") or {}
+        score = str(metadata.get("score") or "")
+        home_score = payload.get("home_score")
+        away_score = payload.get("away_score")
+        if (home_score is None or away_score is None) and "-" in score:
+            parts = [p.strip() for p in score.split("-", 1)]
+            if len(parts) == 2 and all(p.isdigit() for p in parts):
+                home_score, away_score = int(parts[0]), int(parts[1])
+
         query = text(
             """
-            INSERT INTO matches (source_id, source_match_id, season_id, payload)
-            VALUES (:source_id, :source_match_id, :season_id, :payload)
-            ON CONFLICT (source_id, source_match_id)
-            DO UPDATE SET season_id = EXCLUDED.season_id, payload = EXCLUDED.payload
+            INSERT INTO matches (
+                source_id, source_name, source_match_id, season_id, payload, url, source_competition_slug,
+                competition_name, season_key, round_label, match_date_utc, status, home_team_name,
+                away_team_name, home_score, away_score, venue, stats_json, events_json, raw_page_id
+            )
+            VALUES (
+                :source_id, :source_name, :source_match_id, :season_id, :payload, :url, :source_competition_slug,
+                :competition_name, :season_key, :round_label, :match_date_utc, :status, :home_team_name,
+                :away_team_name, :home_score, :away_score, :venue, :stats_json, :events_json, :raw_page_id
+            )
+            ON CONFLICT (source_name, source_match_id)
+            DO UPDATE SET
+                payload = EXCLUDED.payload,
+                url = EXCLUDED.url,
+                source_competition_slug = EXCLUDED.source_competition_slug,
+                competition_name = EXCLUDED.competition_name,
+                season_key = EXCLUDED.season_key,
+                round_label = EXCLUDED.round_label,
+                match_date_utc = EXCLUDED.match_date_utc,
+                status = EXCLUDED.status,
+                home_team_name = EXCLUDED.home_team_name,
+                away_team_name = EXCLUDED.away_team_name,
+                home_score = EXCLUDED.home_score,
+                away_score = EXCLUDED.away_score,
+                venue = EXCLUDED.venue,
+                stats_json = EXCLUDED.stats_json,
+                events_json = EXCLUDED.events_json,
+                raw_page_id = EXCLUDED.raw_page_id,
+                updated_at = NOW()
             RETURNING id
             """
-        ).bindparams(bindparam("metadata_json", type_=JSONB))
+        ).bindparams(bindparam("payload", type_=JSONB), bindparam("stats_json", type_=JSONB), bindparam("events_json", type_=JSONB))
         row = self.session.execute(
             query,
-            {"source_id": source_id, "source_match_id": source_match_id, "season_id": season_id, "payload": payload},
+            {
+                "source_id": source_id,
+                "source_name": payload.get("source_name") or "besoccer",
+                "source_match_id": source_match_id,
+                "season_id": season_id,
+                "payload": payload,
+                "url": payload.get("url") or metadata.get("canonical_url"),
+                "source_competition_slug": payload.get("source_competition_slug") or payload.get("competition_slug"),
+                "competition_name": payload.get("competition_name") or metadata.get("competition_name"),
+                "season_key": payload.get("season_key"),
+                "round_label": payload.get("round_label"),
+                "match_date_utc": payload.get("match_date_utc") or metadata.get("date_utc"),
+                "status": payload.get("status") or metadata.get("status"),
+                "home_team_name": payload.get("home_team_name") or payload.get("home_team"),
+                "away_team_name": payload.get("away_team_name") or payload.get("away_team"),
+                "home_score": home_score,
+                "away_score": away_score,
+                "venue": payload.get("venue") or metadata.get("venue"),
+                "stats_json": payload.get("stats_json") or {},
+                "events_json": payload.get("events_json") or [],
+                "raw_page_id": payload.get("raw_page_id"),
+            },
         ).one()
         return int(row[0])
 
