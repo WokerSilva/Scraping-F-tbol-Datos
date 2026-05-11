@@ -77,7 +77,7 @@ class MatchParser:
             metadata["score"] = self._extract_score_from_description(page_data)
         metadata["home_team_name"] = home_team
         metadata["away_team_name"] = away_team
-        stats_json = self._extract_stats(page_data)
+        stats_json = self._extract_stats(page_data, html=html)
         events_json = self._extract_events(page_data, html)
 
         if not home_team or not away_team:
@@ -195,7 +195,7 @@ class MatchParser:
             return score_match.group("score").replace(":", "-").replace(" ", "")
         return None
 
-    def _extract_stats(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _extract_stats(self, payload: dict[str, Any], *, html: str) -> dict[str, Any]:
         stats_bucket = self._deep_find(payload, "stats") or self._deep_find(payload, "statistics") or {}
         normalized: dict[str, Any] = {}
         if isinstance(stats_bucket, dict):
@@ -213,7 +213,61 @@ class MatchParser:
                 continue
             key = self._normalize_stat_key(str(raw_key))
             normalized[key] = value
-        return normalized
+
+        if normalized:
+            return normalized
+
+        return self._extract_stats_from_html(html)
+
+    def _extract_stats_from_html(self, html: str) -> dict[str, Any]:
+        module_match = re.search(
+            r'<(?:section|div)[^>]+id="mod_stats"[^>]*>(?P<body>.*?)</(?:section|div)>',
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not module_match:
+            return {}
+
+        body = module_match.group("body")
+        rows = re.findall(r"<tr\b[^>]*>(?P<row>.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL)
+        fallback_stats: dict[str, Any] = {}
+        partial_stats: dict[str, Any] = {}
+
+        for raw_row in rows:
+            cells = re.findall(r"<t[dh]\b[^>]*>(?P<cell>.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
+            cleaned_cells = [self._clean_html_text(cell) for cell in cells]
+            cleaned_cells = [cell for cell in cleaned_cells if cell]
+
+            if len(cleaned_cells) < 3:
+                continue
+
+            home_value, raw_key, away_value = cleaned_cells[0], cleaned_cells[1], cleaned_cells[2]
+            normalized_key = self._normalize_stat_key(raw_key)
+            pair_payload = {"home": home_value, "away": away_value}
+
+            if normalized_key in {
+                "possession",
+                "shots_on_target",
+                "shots_total",
+                "corners",
+                "fouls",
+                "yellow_cards",
+                "red_cards",
+            }:
+                fallback_stats[normalized_key] = pair_payload
+            else:
+                partial_stats[normalized_key] = pair_payload
+
+        if partial_stats:
+            fallback_stats["stats_json"] = partial_stats
+        return fallback_stats
+
+    @staticmethod
+    def _clean_html_text(value: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", value)
+        text = re.sub(r"&nbsp;|&#160;", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
         raw_events = self._deep_find(payload, "events") or self._deep_find(payload, "timeline") or []
