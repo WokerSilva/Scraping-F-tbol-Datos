@@ -64,6 +64,8 @@ class MatchParser:
             metadata["competition_name"] = self._extract_competition_from_title(metadata.get("title") or "")
         if not metadata.get("score"):
             metadata["score"] = self._extract_score_from_description(page_data)
+        metadata["home_team_name"] = home_team
+        metadata["away_team_name"] = away_team
         stats_json = self._extract_stats(page_data)
         events_json = self._extract_events(page_data, html)
 
@@ -95,17 +97,27 @@ class MatchParser:
         raise ValueError("Unable to extract match id from URL/HTML")
 
     def _extract_teams(self, html: str) -> tuple[str, str]:
+        # Fuente 1: título con patrón "Estadísticas X vs Y"
         title_match = self._TITLE_RE.search(html)
-        if not title_match:
-            return "", ""
-        title = re.sub(r"\s+", " ", title_match.group("title")).strip()
-        head = title.split("|")[0].strip()
-        for separator in (" vs ", " vs. ", " - "):
-            if separator in head:
-                left, right = head.split(separator, 1)
-                left = left.replace("Estadísticas", "").strip(" ,")
-                right = right.split(",")[0].strip(" ,")
-                return left.strip(), right.strip()
+        if title_match:
+            title = re.sub(r"\s+", " ", title_match.group("title")).strip()
+            head = title.split("|")[0].strip()
+            for separator in (" vs ", " vs. ", " - "):
+                if separator in head:
+                    left, right = head.split(separator, 1)
+                    left = left.replace("Estadísticas", "").strip(" ,")
+                    right = right.split(",")[0].strip(" ,")
+                    if left and right:
+                        return left.strip(), right.strip()
+
+        # Fuente 2: bloque visual/estado JSON con home-away o local-visitor.
+        page_data = self._extract_page_data(html)
+        home_team = self._extract_metadata_value(page_data, ("home", "local", "homeTeam", "localTeam"))
+        away_team = self._extract_metadata_value(page_data, ("away", "visitor", "awayTeam", "visitorTeam"))
+        if home_team and away_team:
+            return home_team.strip(), away_team.strip()
+
+        # Fuente 3: description con marcador.
         desc_score = re.search(r"([A-Za-zÀ-ÿ\s\.\-]+)\s+\d+\s*[-:]\s*\d+\s+([A-Za-zÀ-ÿ\s\.\-]+)", html)
         if desc_score:
             return desc_score.group(1).strip(), desc_score.group(2).strip()
