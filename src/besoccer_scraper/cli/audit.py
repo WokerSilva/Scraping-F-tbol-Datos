@@ -15,3 +15,7 @@ def run_audit_mx_season(container: object, *, competition: str, year: int) -> di
 
 def inspect_match(container: object, *, source_match_id: str) -> dict[str, object] | None:
     return container.inspect_match_use_case.execute(source_match_id=source_match_id)
+
+
+def inspect_targets(container: object, *, competition: str, year: int) -> dict[str, object]:
+    return container.inspect_targets_use_case.execute(competition=competition, year=year)

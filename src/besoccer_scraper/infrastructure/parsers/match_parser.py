@@ -10,6 +10,7 @@ from besoccer_scraper.domain.entities import Match
 
 class MatchParser:
     _ID_PATTERNS = (
+        re.compile(r"/partido/[^/]+/[^/]+/(?P<id>\d+)", re.IGNORECASE),
         re.compile(r"/partido/[^/]+/(?P<id>\d+)", re.IGNORECASE),
         re.compile(r'"matchId"\s*:\s*"?(?P<id>\d+)"?', re.IGNORECASE),
     )
@@ -36,6 +37,7 @@ class MatchParser:
         kickoff_at = self._extract_kickoff(html)
         page_data = self._extract_page_data(html)
 
+        fallback_round = self._extract_round_from_text(html)
         metadata = {
             "competition_name": self._extract_metadata_value(page_data, ("competition_name", "competitionName", "leagueName")),
             "season_key": season_key
@@ -47,9 +49,19 @@ class MatchParser:
             "score": self._extract_score(page_data, html),
             "date_utc": self._format_utc_datetime(kickoff_at),
         }
+        if not metadata["round_label"] and fallback_round:
+            metadata["round_label"] = fallback_round
+        metadata["canonical_url"] = self._extract_canonical(html) or url
+        metadata["title"] = self._extract_title(html)
+        if not metadata.get("competition_name"):
+            metadata["competition_name"] = self._extract_competition_from_title(metadata.get("title") or "")
+        if not metadata.get("score"):
+            metadata["score"] = self._extract_score_from_description(page_data)
         stats_json = self._extract_stats(page_data)
         events_json = self._extract_events(page_data, html)
 
+        if not home_team or not away_team:
+            raise ValueError("Unable to extract teams")
         return Match(
             external_id=source_match_id,
             competition_id=competition_slug,
@@ -81,10 +93,15 @@ class MatchParser:
             return "", ""
         title = re.sub(r"\s+", " ", title_match.group("title")).strip()
         head = title.split("|")[0].strip()
-        for separator in (" - ", " vs ", " vs. "):
+        for separator in (" vs ", " vs. ", " - "):
             if separator in head:
                 left, right = head.split(separator, 1)
+                left = left.replace("Estadísticas", "").strip(" ,")
+                right = right.split(",")[0].strip(" ,")
                 return left.strip(), right.strip()
+        desc_score = re.search(r"([A-Za-zÀ-ÿ\s\.\-]+)\s+\d+\s*[-:]\s*\d+\s+([A-Za-zÀ-ÿ\s\.\-]+)", html)
+        if desc_score:
+            return desc_score.group(1).strip(), desc_score.group(2).strip()
         return "", ""
 
     def _extract_kickoff(self, html: str) -> datetime | None:
@@ -167,11 +184,41 @@ class MatchParser:
             return events
 
         # Fallback extraction from plain-text timeline strings.
-        for line in re.findall(r"goal[^<\n]*", html, flags=re.IGNORECASE):
-            parsed = self._build_goal_event({"type": "goal", "text": line})
+        goals_section = re.search(r'id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
+        body = goals_section.group("body") if goals_section else html
+        chunks = re.findall(r"(\d{1,3}(?:\+\d+)?'[^']*?)(?=\d{1,3}(?:\+\d+)?'|$)", body, flags=re.IGNORECASE)
+        for line in chunks:
+            parsed = self._build_goal_event({"type": "goal", "text": line.strip()})
             if parsed:
                 events.append(parsed)
         return events
+
+    @staticmethod
+    def _extract_canonical(html: str) -> str | None:
+        m = re.search(r'<link[^>]+rel="canonical"[^>]+href="([^"]+)"', html, re.I)
+        return m.group(1).strip() if m else None
+
+    def _extract_title(self, html: str) -> str | None:
+        m = self._TITLE_RE.search(html)
+        return re.sub(r"\s+", " ", m.group("title")).strip() if m else None
+
+    @staticmethod
+    def _extract_round_from_text(html: str) -> str | None:
+        m = re.search(r"Jornada\s+(\d+)", html, re.I)
+        return f"JORNADA{int(m.group(1))}" if m else None
+
+    @staticmethod
+    def _extract_competition_from_title(title: str) -> str | None:
+        m = re.search(r",\s*([^,]+Jornada\s+\d+)", title, re.I)
+        if m:
+            return re.sub(r"\s+Jornada\s+\d+", "", m.group(1), flags=re.I).strip()
+        return None
+
+    @staticmethod
+    def _extract_score_from_description(payload: dict[str, Any]) -> str | None:
+        desc = str(payload.get("description") or "")
+        m = re.search(r"\b(\d+)\s*[-:]\s*(\d+)\b", desc)
+        return f"{m.group(1)}-{m.group(2)}" if m else None
 
     def _build_goal_event(self, event: Any) -> dict[str, Any] | None:
         if not isinstance(event, dict):

@@ -44,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     mx_season.add_argument("--dry-run", action="store_true", default=False)
     mx_season.add_argument("--persist", action="store_true", default=False)
     mx_season.add_argument("--print-urls", action="store_true", default=False)
+    mx_season.add_argument("--sample-size", type=int, default=3)
+    mx_season.add_argument("--allow-partial", action="store_true", default=False)
     mx_season.add_argument("--debug", action="store_true", default=False)
     mx_season.add_argument("--browser", dest="browser", action="store_true", default=None)
     mx_season.add_argument("--no-browser", dest="browser", action="store_false")
@@ -92,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_match = inspect_sub.add_parser("match")
     inspect_match.set_defaults(inspect_mode="match")
     inspect_match.add_argument("--source-match-id", required=True)
+    inspect_targets = inspect_sub.add_parser("targets")
+    inspect_targets.set_defaults(inspect_mode="targets")
+    inspect_targets.add_argument("--competition", required=True)
+    inspect_targets.add_argument("--year", type=int, required=True)
 
     pipeline = sub.add_parser("pipeline")
     pipeline.add_argument("--discover-url", required=True)
@@ -139,11 +145,13 @@ def main(argv: list[str] | None = None) -> object:
         raise ValueError(f"Unknown audit mode: {args.audit_mode}")
     if args.command == "inspect":
         from besoccer_scraper.bootstrap import build_container
-        from besoccer_scraper.cli.audit import inspect_match
+        from besoccer_scraper.cli.audit import inspect_match, inspect_targets
 
         container = build_container(args)
         if args.inspect_mode == "match":
             return inspect_match(container, source_match_id=args.source_match_id)
+        if args.inspect_mode == "targets":
+            return inspect_targets(container, competition=args.competition, year=args.year)
         raise ValueError(f"Unknown inspect mode: {args.inspect_mode}")
     if args.command == "pipeline":
         from besoccer_scraper.bootstrap import build_container
