@@ -324,12 +324,30 @@ class PostgresRawPageRepository(RawPagesRepository):
 
 
 class PostgresMatchRepository(MatchesRepository):
+    def ensure_source(self, name: str = "besoccer") -> int:
+        row = self.session.execute(
+            text(
+                """
+                INSERT INTO sources (source_name)
+                VALUES (:name)
+                ON CONFLICT (source_name) DO UPDATE SET source_name = EXCLUDED.source_name
+                RETURNING id
+                """
+            ),
+            {"name": name},
+        ).one_or_none()
+        if row is not None:
+            return int(row[0])
+        existing = self.session.execute(text("SELECT id FROM sources WHERE source_name = :name LIMIT 1"), {"name": name}).one()
+        return int(existing[0])
+
     def upsert_many(self, matches: list[Match]) -> int:
         count = 0
+        source_id = self.ensure_source("besoccer")
         for match in matches:
             payload = dict(match.payload or {})
-            source_id = int(payload.get("source_id") or 1)
-            self.upsert_match(source_id=source_id, source_match_id=str(match.external_id), payload=payload, season_id=None)
+            source_id_item = int(payload.get("source_id") or source_id)
+            self.upsert_match(source_id=source_id_item, source_match_id=str(match.external_id), payload=payload, season_id=None)
             count += 1
         return count
 
