@@ -51,7 +51,7 @@ class ScrapeMatchesUseCase:
                 if debug_html:
                     debug_path = self._save_debug_html(target=target, html=html)
                     print(f"Debug HTML saved: {debug_path}")
-                if self._save_raw_page(target_url, html, enabled=self._is_raw_enabled()):
+                if self._save_raw_page(target_url, html, enabled=True):
                     counters["raw_pages_saved"] += 1
                 parsed_match = self.parser.parse_match(
                     html,
@@ -95,7 +95,7 @@ class ScrapeMatchesUseCase:
         html = self.http_client.get(url)
         if debug_html:
             print(html[:1000])
-        self._save_raw_page(url, html, enabled=self._is_raw_enabled())
+        self._save_raw_page(url, html, enabled=True)
         parsed_match = self.parser.parse_match(
             html,
             url=url,
