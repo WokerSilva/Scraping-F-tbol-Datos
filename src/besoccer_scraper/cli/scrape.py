@@ -7,6 +7,7 @@ def run_scrape(container: object, args: object) -> int:
             url=args.url,
             competition_slug=args.competition_slug,
             round_label=args.round_label,
+            season_key=args.season_key,
             debug_html=args.debug_html,
             target_id=args.target_id,
         )
