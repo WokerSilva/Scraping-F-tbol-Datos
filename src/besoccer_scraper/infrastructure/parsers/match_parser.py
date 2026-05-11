@@ -9,6 +9,17 @@ from besoccer_scraper.domain.entities import Match
 
 
 class MatchParser:
+    _EVENT_STATUS_MAP = {
+        "EventCompleted": "FIN",
+        "EventScheduled": "SCH",
+        "EventPostponed": "PST",
+        "EventCancelled": "CANC",
+        "EventAbandoned": "ABD",
+        "EventDelayed": "DLY",
+        "EventRescheduled": "RSC",
+        "EventLive": "LIVE",
+        "EventInProgress": "LIVE",
+    }
     _ID_PATTERNS = (
         re.compile(r"/partido/[^/]+/[^/]+/(?P<id>\d+)", re.IGNORECASE),
         re.compile(r"/partido/[^/]+/(?P<id>\d+)", re.IGNORECASE),
@@ -51,8 +62,8 @@ class MatchParser:
             or self._extract_metadata_value(page_data, ("season_key", "seasonKey", "season", "season_name")),
             "round_label": round_label
             or self._extract_metadata_value(page_data, ("round_label", "roundLabel", "matchday", "journey", "round")),
-            "venue": self._extract_metadata_value(page_data, ("venue", "stadium", "stadiumName")),
-            "status": self._extract_metadata_value(page_data, ("status", "matchStatus", "state")),
+            "venue": self._extract_venue(page_data),
+            "status": self._extract_status(page_data),
             "score": self._extract_score(page_data, html),
             "date_utc": self._format_utc_datetime(kickoff_at),
         }
@@ -159,6 +170,20 @@ class MatchParser:
             if value not in (None, ""):
                 return str(value)
         return None
+
+    def _extract_venue(self, payload: dict[str, Any]) -> str | None:
+        location = self._deep_find(payload, "location")
+        if isinstance(location, dict):
+            name = location.get("name")
+            if name not in (None, ""):
+                return str(name)
+        return self._extract_metadata_value(payload, ("venue", "stadium", "stadiumName"))
+
+    def _extract_status(self, payload: dict[str, Any]) -> str | None:
+        event_status = self._extract_metadata_value(payload, ("eventStatus",))
+        if event_status:
+            return self._EVENT_STATUS_MAP.get(event_status, event_status)
+        return self._extract_metadata_value(payload, ("status", "matchStatus", "state"))
 
     def _extract_score(self, payload: dict[str, Any], html: str) -> str | None:
         home_goals = self._deep_find(payload, "homeScore") or self._deep_find(payload, "localGoals")
