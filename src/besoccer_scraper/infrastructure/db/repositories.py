@@ -7,6 +7,8 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
+from besoccer_scraper.domain.entities import Match
+
 
 class BaseRepository:
     table_name: str
@@ -146,7 +148,7 @@ class RunLocksRepository(BaseRepository):
 
 
 class PostgresTargetRepository(ScrapeTargetsRepository):
-    def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> int:
+    def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
         query = text(
             """
             INSERT INTO scrape_targets (source_name, target_type, url, source_match_id, source_competition_slug, season_key, round_label, status, metadata_json)
@@ -160,7 +162,7 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 status = EXCLUDED.status,
                 metadata_json = EXCLUDED.metadata_json,
                 updated_at = NOW()
-            RETURNING id
+            RETURNING id, (xmax = 0) AS inserted
             """
         ).bindparams(bindparam("metadata_json", type_=JSONB))
         row = self.session.execute(
@@ -177,7 +179,21 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 "metadata_json": payload.get("metadata_json") or payload,
             },
         ).one()
-        return int(row[0])
+        return {"id": int(row[0]), "inserted": bool(row[1]), "updated": not bool(row[1])}
+
+    def list_recent_by_competition_season(self, *, competition: str, season_key: str, limit: int = 10) -> list[dict[str, Any]]:
+        query = text(
+            """
+            SELECT id, source_match_id, round_label, status, url
+            FROM scrape_targets
+            WHERE source_name = 'besoccer'
+              AND source_competition_slug = :competition
+              AND season_key = :season_key
+            ORDER BY id DESC
+            LIMIT :limit
+            """
+        )
+        return list(self.session.execute(query, {"competition": competition, "season_key": season_key, "limit": limit}).mappings())
 
     def list_for_processing(self, *, limit: int) -> list[dict[str, Any]]:
         query = text(
@@ -308,19 +324,83 @@ class PostgresRawPageRepository(RawPagesRepository):
 
 
 class PostgresMatchRepository(MatchesRepository):
+    def upsert_many(self, matches: list[Match]) -> int:
+        count = 0
+        for match in matches:
+            payload = dict(match.payload or {})
+            source_id = int(payload.get("source_id") or 1)
+            self.upsert_match(source_id=source_id, source_match_id=str(match.external_id), payload=payload, season_id=None)
+            count += 1
+        return count
+
     def upsert_match(self, *, source_id: int, source_match_id: str, payload: dict[str, Any], season_id: int | None = None) -> int:
+        metadata = payload.get("metadata") or {}
+        score = str(metadata.get("score") or "")
+        home_score = payload.get("home_score")
+        away_score = payload.get("away_score")
+        if (home_score is None or away_score is None) and "-" in score:
+            parts = [p.strip() for p in score.split("-", 1)]
+            if len(parts) == 2 and all(p.isdigit() for p in parts):
+                home_score, away_score = int(parts[0]), int(parts[1])
+
         query = text(
             """
-            INSERT INTO matches (source_id, source_match_id, season_id, payload)
-            VALUES (:source_id, :source_match_id, :season_id, :payload)
-            ON CONFLICT (source_id, source_match_id)
-            DO UPDATE SET season_id = EXCLUDED.season_id, payload = EXCLUDED.payload
+            INSERT INTO matches (
+                source_id, source_name, source_match_id, season_id, payload, url, source_competition_slug,
+                competition_name, season_key, round_label, match_date_utc, status, home_team_name,
+                away_team_name, home_score, away_score, venue, stats_json, events_json, raw_page_id
+            )
+            VALUES (
+                :source_id, :source_name, :source_match_id, :season_id, :payload, :url, :source_competition_slug,
+                :competition_name, :season_key, :round_label, :match_date_utc, :status, :home_team_name,
+                :away_team_name, :home_score, :away_score, :venue, :stats_json, :events_json, :raw_page_id
+            )
+            ON CONFLICT (source_name, source_match_id)
+            DO UPDATE SET
+                payload = EXCLUDED.payload,
+                url = EXCLUDED.url,
+                source_competition_slug = EXCLUDED.source_competition_slug,
+                competition_name = EXCLUDED.competition_name,
+                season_key = EXCLUDED.season_key,
+                round_label = EXCLUDED.round_label,
+                match_date_utc = EXCLUDED.match_date_utc,
+                status = EXCLUDED.status,
+                home_team_name = EXCLUDED.home_team_name,
+                away_team_name = EXCLUDED.away_team_name,
+                home_score = EXCLUDED.home_score,
+                away_score = EXCLUDED.away_score,
+                venue = EXCLUDED.venue,
+                stats_json = EXCLUDED.stats_json,
+                events_json = EXCLUDED.events_json,
+                raw_page_id = EXCLUDED.raw_page_id,
+                updated_at = NOW()
             RETURNING id
             """
-        ).bindparams(bindparam("metadata_json", type_=JSONB))
+        ).bindparams(bindparam("payload", type_=JSONB), bindparam("stats_json", type_=JSONB), bindparam("events_json", type_=JSONB))
         row = self.session.execute(
             query,
-            {"source_id": source_id, "source_match_id": source_match_id, "season_id": season_id, "payload": payload},
+            {
+                "source_id": source_id,
+                "source_name": payload.get("source_name") or "besoccer",
+                "source_match_id": source_match_id,
+                "season_id": season_id,
+                "payload": payload,
+                "url": payload.get("url") or metadata.get("canonical_url"),
+                "source_competition_slug": payload.get("source_competition_slug") or payload.get("competition_slug"),
+                "competition_name": payload.get("competition_name") or metadata.get("competition_name"),
+                "season_key": payload.get("season_key"),
+                "round_label": payload.get("round_label"),
+                "match_date_utc": payload.get("match_date_utc") or metadata.get("date_utc"),
+                "status": payload.get("status") or metadata.get("status"),
+                "home_team_name": payload.get("home_team_name") or payload.get("home_team"),
+                "away_team_name": payload.get("away_team_name") or payload.get("away_team"),
+                "home_score": home_score,
+                "away_score": away_score,
+                "venue": payload.get("venue") or metadata.get("venue"),
+                "stats_json": payload.get("stats_json") or {},
+                "events_json": payload.get("events_json") or [],
+                "raw_page_id": payload.get("raw_page_id"),
+            },
         ).one()
         return int(row[0])
 
