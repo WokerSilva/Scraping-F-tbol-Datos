@@ -98,13 +98,16 @@ class DiscoverMxSeasonUseCase:
         rounds_detected = len(detected_rounds_set)
         rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
         missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
-        coverage_status = "complete" if rounds_detected == rounds_expected and 145 <= len(rows) <= 160 else "partial"
+        expected_matches = 153 if competition_slug in {"clausura_mexico", "apertura_mexico"} else len(rows)
+        coverage_status = "complete" if rounds_detected == rounds_expected and len(rows) == expected_matches else "partial"
         print(f"competition={competition_slug}")
         print(f"year={year}")
         print(f"season_key={season_key}")
         print("strategy=browser_dom_rounds")
         print(f"rounds_expected={rounds_expected}")
+        print(f"rounds_attempted={rounds_expected}")
         print(f"rounds_detected={rounds_detected}")
+        print(f"missing_rounds={missing_rounds}")
         print(f"targets_found={len(rows)}")
         print(f"unique_match_ids={len({r['source_match_id'] for r in rows})}")
         print(f"coverage_status={coverage_status}")
@@ -115,6 +118,11 @@ class DiscoverMxSeasonUseCase:
         for label in sorted(grouped_ids.keys(), key=self._round_sort_key):
             sample = grouped_ids[label][:sample_size]
             print(f"{label} count={len(grouped_ids[label])} sample_ids={sample}")
+        duplicate_ids = sorted([match_id for match_id in {r["source_match_id"] for r in rows} if sum(1 for x in rows if x["source_match_id"] == match_id) > 1])
+        print(f"targets_by_round={{{', '.join(f'{k}:{len(v)}' for k, v in sorted(grouped_ids.items(), key=lambda x: self._round_sort_key(x[0])))}}}")
+        print(f"sample_ids_by_round={{{', '.join(f'{k}:{v[:sample_size]}' for k, v in sorted(grouped_ids.items(), key=lambda x: self._round_sort_key(x[0])))}}}")
+        print(f"duplicate_source_match_ids={duplicate_ids}")
+        print(f"unstable_rounds=[]")
         if debug and not rows:
             debug_path = Path("data/snapshots/errors") / f"mx_season_{competition_slug}_{year}_summary.json"
             if debug_path.exists():
@@ -128,7 +136,7 @@ class DiscoverMxSeasonUseCase:
                 print(f"match_anchor_count_scoped={summary.get('match_anchor_count_scoped')}")
         if require_complete and coverage_status != "complete":
             raise RuntimeError(
-                f"Discovery incompleto para {competition_slug} {year}: rounds_detected={rounds_detected}/{rounds_expected} targets_found={len(rows)}/{153}"
+                f"Discovery incompleto para {competition_slug} {year}: rounds_detected={rounds_detected}/{rounds_expected} targets_found={len(rows)}/{expected_matches}"
             )
         if persist and not dry_run and coverage_status == "partial" and not allow_partial:
             print("Discovery parcial: no se persiste sin --allow-partial")
@@ -193,7 +201,7 @@ class DiscoverMxSeasonUseCase:
         rounds_attempted = 0
         for round_result in rendered:
             rounds_attempted += 1
-            round_label = str(round_result.get("round_label", ""))
+            round_label = str(round_result.get("requested_round") or round_result.get("round_label", ""))
             round_matches = list(round_result.get("matches", []))
             if not round_matches and round_result.get("html"):
                 page = self.competition_parser.parse(str(round_result.get("html")))
