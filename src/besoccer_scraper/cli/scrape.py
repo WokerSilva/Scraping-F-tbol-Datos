@@ -18,4 +18,12 @@ def run_scrape(container: object, args: object) -> int:
             limit=args.limit,
             debug_html=args.debug_html,
         )
+    if args.scrape_mode == "rescrape-matches":
+        return container.scrape_use_case.execute_rescrape_matches(
+            competition_slug=args.competition,
+            season_key=args.season_key,
+            limit=args.limit,
+            source_match_id=args.source_match_id,
+            debug_html=args.debug_html,
+        )
     return container.scrape_use_case.execute(args.competition_id, args.source_url)
