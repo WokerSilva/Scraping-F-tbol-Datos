@@ -8,6 +8,11 @@ from typing import Any
 
 from besoccer_scraper.domain.entities import Match
 
+try:
+    from bs4 import BeautifulSoup
+except Exception:  # pragma: no cover
+    BeautifulSoup = None
+
 
 class MatchParser:
     _EVENT_STATUS_MAP = {
@@ -87,6 +92,7 @@ class MatchParser:
                 metadata["away_team_name"] = away_team
         stats_json = self._extract_stats(page_data, html=html)
         events_json = self._extract_events(page_data, html)
+        metadata["parser_debug_counts"] = self._build_parser_debug_counts(html)
 
         if not home_team or not away_team:
             raise ValueError("Unable to extract teams")
@@ -232,6 +238,15 @@ class MatchParser:
         return self._extract_stats_from_html(html)
 
     def _extract_stats_from_html(self, html: str) -> dict[str, Any]:
+        if BeautifulSoup is None:
+            return self._extract_stats_from_html_regex(html)
+        soup = BeautifulSoup(html, "html.parser")
+        panel = soup.select_one("#mod_stats")
+        if panel is None:
+            return {}
+        return self._extract_stats_from_panel_text_and_rows(str(panel), panel.get_text(" ", strip=True))
+
+    def _extract_stats_from_html_regex(self, html: str) -> dict[str, Any]:
         module_match = re.search(
             r"""<(?:section|div)[^>]+id=["']mod_stats["'][^>]*>(?P<body>.*?)</(?:section|div)>""",
             html,
@@ -239,11 +254,13 @@ class MatchParser:
         )
         if not module_match:
             return {}
-        body = module_match.group("body")
+        return self._extract_stats_from_panel_text_and_rows(module_match.group("body"), self._clean_html_text(module_match.group("body")))
+
+    def _extract_stats_from_panel_text_and_rows(self, body_html: str, module_text: str) -> dict[str, Any]:
         fallback_stats: dict[str, Any] = {}
         partial_stats: dict[str, Any] = {}
 
-        for raw_row in re.findall(r"<tr\b[^>]*>(?P<row>.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL):
+        for raw_row in re.findall(r"<tr\b[^>]*>(?P<row>.*?)</tr>", body_html, flags=re.IGNORECASE | re.DOTALL):
             cells = re.findall(r"<t[dh]\b[^>]*>(?P<cell>.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
             cleaned_cells = [self._clean_html_text(cell) for cell in cells]
             cleaned_cells = [cell for cell in cleaned_cells if cell]
@@ -268,7 +285,6 @@ class MatchParser:
                 partial_stats[normalized_key] = pair_payload
 
         # Tolerant fallback for non-table structures (div-based stats).
-        module_text = self._clean_html_text(body)
         if module_text:
             label_aliases: dict[str, tuple[str, ...]] = {
                 "possession": ("Posesión", "Posesion"),
@@ -303,13 +319,43 @@ class MatchParser:
         return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
+        if BeautifulSoup is None:
+            return self._extract_events_regex(payload, html)
+        soup = BeautifulSoup(html, "html.parser")
+        panel = soup.select_one("#events-goals")
+        events: list[dict[str, Any]] = []
+        if panel is not None:
+            rows = panel.select(".table-played-match")
+            if rows:
+                for row in rows:
+                    if not (row.select_one('img[alt="Gol"]') or row.select_one('img[src*="accion1"]') or row.select_one(".event-1")):
+                        continue
+                    minute_node = row.select_one(".min, .minute")
+                    minute_raw = self._normalize_minute_raw(minute_node.get_text(" ", strip=True) if minute_node else "")
+                    player_name = self._extract_goal_player_from_soup_row(row, soup)
+                    if not self._is_valid_goal_player_name(player_name):
+                        continue
+                    parsed = self._build_goal_event({"type": "goal", "minute": minute_raw, "text": f"{minute_raw} {player_name} goal", "player": player_name, "side": self._extract_goal_side_from_row(str(row))})
+                    if parsed is not None:
+                        parsed["assist_player_name"] = self._extract_assist_player_from_soup_row(row)
+                        events.append(parsed)
+                return self._dedupe_goal_events(events)
+            panel_text = panel.get_text(" ", strip=True)
+            return self._extract_text_goals(panel_text)
+        return self._extract_events_regex(payload, html)
+
+    def _extract_events_regex(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
         goals_section = re.search(r"""<section[^>]+id=["']events-goals["'][^>]*>(?P<body>.*?)</section>""", html, flags=re.IGNORECASE | re.DOTALL)
         events: list[dict[str, Any]] = []
 
         # Prioridad: usar solo #events-goals cuando exista.
         if goals_section:
             body = goals_section.group("body")
-            rows = re.findall(r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?</div>)', body, flags=re.IGNORECASE | re.DOTALL)
+            rows = re.findall(
+                r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?)(?=<div[^>]*class="[^"]*table-played-match|$)',
+                body,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             if rows:
                 for row in rows:
                     if not self._is_goal_row(row):
@@ -334,27 +380,7 @@ class MatchParser:
                 return self._dedupe_goal_events(events)
 
             # Fallback textual para HTML mínimo (cuando existe #events-goals pero sin rows estructurados).
-            for match in re.finditer(
-                r"(?P<minute>\d{1,3}(?:\+\d+)?)['’]?\s+(?P<player>.+?)\s+goal\b",
-                self._clean_html_text(body),
-                flags=re.IGNORECASE,
-            ):
-                minute_raw = self._normalize_minute_raw(match.group("minute"))
-                player_name = self._clean_player_name(match.group("player"))
-                if not self._is_valid_goal_player_name(player_name):
-                    continue
-                parsed = self._build_goal_event(
-                    {
-                        "type": "goal",
-                        "minute": minute_raw,
-                        "text": f"{minute_raw} {player_name} goal".strip(),
-                        "player": player_name,
-                        "side": "unknown",
-                    }
-                )
-                if parsed is not None:
-                    events.append(parsed)
-            return self._dedupe_goal_events(events)
+            return self._extract_text_goals(self._clean_html_text(body))
 
         # Fallback: timeline JSON filtrando tipos estrictos de gol.
         raw_events = self._deep_find(payload, "events") or self._deep_find(payload, "timeline") or []
@@ -364,6 +390,65 @@ class MatchParser:
                 if parsed is not None:
                     events.append(parsed)
         return self._dedupe_goal_events(events)
+
+    def _extract_text_goals(self, text: str) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for match in re.finditer(r"(?P<minute>\d{1,3}(?:\+\d+)?)['’]?\s+(?P<player>.+?)\s+goal\b", text, flags=re.IGNORECASE):
+            minute_raw = self._normalize_minute_raw(match.group("minute"))
+            player_name = self._clean_player_name(match.group("player"))
+            if not self._is_valid_goal_player_name(player_name):
+                continue
+            parsed = self._build_goal_event({"type": "goal", "minute": minute_raw, "text": f"{minute_raw} {player_name} goal", "player": player_name, "side": "unknown"})
+            if parsed is not None:
+                events.append(parsed)
+        return self._dedupe_goal_events(events)
+
+    def _build_parser_debug_counts(self, html: str) -> dict[str, Any]:
+        if BeautifulSoup is None:
+            clean = self._clean_html_text(html)
+            return {"events_goals_found": 'id="events-goals"' in html or "id='events-goals'" in html, "goal_rows_found": len(re.findall(r"table-played-match", html)), "goal_imgs_found": len(re.findall(r'alt="Gol"', html)), "accion1_imgs_found": len(re.findall(r"accion1", html)), "event1_nodes_found": len(re.findall(r"event-1", html)), "mod_stats_found": 'id="mod_stats"' in html or "id='mod_stats'" in html, "stats_rows_found": len(re.findall(r"<tr\\b", html)), "stats_text_has_posesion": "Posesión" in clean}
+        soup = BeautifulSoup(html, "html.parser")
+        return {
+            "events_goals_found": bool(soup.select_one("#events-goals")),
+            "goal_rows_found": len(soup.select("#events-goals .table-played-match")),
+            "goal_imgs_found": len(soup.select('#events-goals img[alt="Gol"]')),
+            "accion1_imgs_found": len(soup.select('#events-goals img[src*="accion1"]')),
+            "event1_nodes_found": len(soup.select("#events-goals .event-1")),
+            "mod_stats_found": bool(soup.select_one("#mod_stats")),
+            "stats_rows_found": len(soup.select("#mod_stats tr")),
+            "stats_text_has_posesion": "Posesión" in soup.get_text(" ", strip=True),
+        }
+
+    def _extract_goal_player_from_soup_row(self, row: Any, soup: Any) -> str | None:
+        for a in row.select('a[href^="#popup_event"]'):
+            popup = soup.select_one(a.get("href"))
+            if popup:
+                for item in popup.select(".right-content, .event-item, li, .table-played-match"):
+                    if item.select_one(".event-1") or item.select_one('img[alt="Gol"]') or item.select_one('img[src*="accion1"]'):
+                        main = item.select_one("a.main-text")
+                        if main:
+                            name = self._clean_player_name(main.get_text(" ", strip=True))
+                            if self._is_valid_goal_player_name(name):
+                                return name
+        for a in row.select('a[data-cy="event"]'):
+            classes = " ".join(a.get("class", []))
+            if "color-grey2" in classes:
+                continue
+            name = self._clean_player_name(a.get_text(" ", strip=True))
+            if self._is_valid_goal_player_name(name):
+                return name
+        return None
+
+    def _extract_assist_player_from_soup_row(self, row: Any) -> str | None:
+        a = row.select_one('a.color-grey2, .event-22 a')
+        if a:
+            return self._clean_player_name(a.get_text(" ", strip=True))
+        names: list[str] = []
+        for item in row.select('a[data-cy="event"]'):
+            name = self._clean_player_name(item.get_text(" ", strip=True))
+            if self._is_valid_goal_player_name(name):
+                names.append(name)
+        return names[1] if len(names) > 1 else None
 
     @staticmethod
     def _extract_canonical(html: str) -> str | None:
@@ -506,7 +591,9 @@ class MatchParser:
 
     @staticmethod
     def _normalize_minute_raw(value: str) -> str:
-        return re.sub(r"\s+", "", str(value or "")).strip("'")
+        cleaned = re.sub(r"\s+", "", str(value or ""))
+        cleaned = cleaned.replace("’", "").replace("'", "")
+        return cleaned
 
     def _extract_goal_player_from_row(self, row: str, *, body: str) -> str | None:
         popup_link = re.search(r'href="(?P<ref>#popup_event[^"]+)"', row, flags=re.IGNORECASE)
@@ -550,7 +637,12 @@ class MatchParser:
             text = self._clean_player_name(anchor)
             if text:
                 return text
-        return None
+        names: list[str] = []
+        for _, _, label in re.findall(r'<a\b(?P<attrs>[^>]*)data-cy="event"(?P<attrs2>[^>]*)>(?P<label>.*?)</a>', row, flags=re.IGNORECASE | re.DOTALL):
+            text = self._clean_player_name(label)
+            if self._is_valid_goal_player_name(text):
+                names.append(text)
+        return names[1] if len(names) > 1 else None
 
     @staticmethod
     def _normalize_minute_key(minute: Any, added_time: Any, minute_raw: Any) -> str:
