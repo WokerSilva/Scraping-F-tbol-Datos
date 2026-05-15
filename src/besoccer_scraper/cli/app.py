@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     mx_season.add_argument("--print-urls", action="store_true", default=False)
     mx_season.add_argument("--sample-size", type=int, default=3)
     mx_season.add_argument("--allow-partial", action="store_true", default=False)
+    mx_season.add_argument("--require-complete", action="store_true", default=False)
     mx_season.add_argument("--debug", action="store_true", default=False)
     mx_season.add_argument("--browser", dest="browser", action="store_true", default=None)
     mx_season.add_argument("--no-browser", dest="browser", action="store_false")

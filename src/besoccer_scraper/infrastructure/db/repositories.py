@@ -191,11 +191,6 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
             VALUES (:source_name, :target_type, :url, :source_match_id, :source_competition_slug, :season_key, :round_label, :status, :metadata_json)
             ON CONFLICT (source_name, target_type, url)
             DO UPDATE SET
-                source_match_id = EXCLUDED.source_match_id,
-                source_competition_slug = EXCLUDED.source_competition_slug,
-                season_key = EXCLUDED.season_key,
-                round_label = EXCLUDED.round_label,
-                status = EXCLUDED.status,
                 metadata_json = EXCLUDED.metadata_json,
                 updated_at = NOW()
             RETURNING id, (xmax = 0) AS inserted
@@ -215,7 +210,14 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 "metadata_json": payload.get("metadata_json") or payload,
             },
         ).one()
-        return {"id": int(row[0]), "inserted": bool(row[1]), "updated": not bool(row[1]), "updated_safe": False, "skipped_existing": False}
+        inserted = bool(row[1])
+        return {
+            "id": int(row[0]),
+            "inserted": inserted,
+            "updated": False,
+            "updated_safe": (not inserted),
+            "skipped_existing": (not inserted),
+        }
 
     def list_recent_by_competition_season(self, *, competition: str, season_key: str, limit: int = 10) -> list[dict[str, Any]]:
         query = text(

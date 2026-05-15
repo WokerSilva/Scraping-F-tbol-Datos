@@ -69,7 +69,7 @@ class DiscoverMxSeasonUseCase:
         if self.expected_rounds is None:
             self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
 
-    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False, sample_size: int = 3, allow_partial: bool = False) -> list[dict[str, str]]:
+    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False, sample_size: int = 3, allow_partial: bool = False, require_complete: bool = False) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
         competition_url = f"https://es.besoccer.com/competicion/resultados/{competition_slug}/{year}"
         force_browser = competition_slug in {"clausura_mexico", "apertura_mexico"}
@@ -126,6 +126,10 @@ class DiscoverMxSeasonUseCase:
                 print(f"round_options_found={summary.get('round_options_found')}")
                 print(f"match_anchor_count_global={summary.get('match_anchor_count_global')}")
                 print(f"match_anchor_count_scoped={summary.get('match_anchor_count_scoped')}")
+        if require_complete and coverage_status != "complete":
+            raise RuntimeError(
+                f"Discovery incompleto para {competition_slug} {year}: rounds_detected={rounds_detected}/{rounds_expected} targets_found={len(rows)}/{153}"
+            )
         if persist and not dry_run and coverage_status == "partial" and not allow_partial:
             print("Discovery parcial: no se persiste sin --allow-partial")
             print(f"missing_rounds={missing_rounds}")
