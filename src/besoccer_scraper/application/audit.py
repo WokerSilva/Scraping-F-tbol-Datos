@@ -87,7 +87,11 @@ class AuditMxSeasonUseCase:
         rounds = {str(row["round_label"]): int(row["total"]) for row in rows}
         expected_rounds = 17
         expected_matches = 153
+        expected_matches_per_round = 9
         matches_total = int(coverage.get("matches_total", 0) or 0)
+        missing_rounds = [f"JORNADA{i}" for i in range(1, expected_rounds + 1) if f"JORNADA{i}" not in rounds]
+        duplicate_count_rounds = {label: total for label, total in rounds.items() if label.startswith("JORNADA") and total > expected_matches_per_round}
+        irregular_round_counts = {label: total for label, total in rounds.items() if label.startswith("JORNADA") and total != expected_matches_per_round}
 
         return {
             "competition": competition,
@@ -105,6 +109,9 @@ class AuditMxSeasonUseCase:
             "expected_matches": expected_matches,
             "gap_rounds": expected_rounds - len(rounds),
             "gap_matches": expected_matches - matches_total,
+            "missing_rounds": missing_rounds,
+            "duplicate_count_rounds": duplicate_count_rounds,
+            "irregular_round_counts": irregular_round_counts,
         }
 
 
