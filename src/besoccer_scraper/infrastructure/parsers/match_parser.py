@@ -363,20 +363,21 @@ class MatchParser:
                         continue
                     minute_text = self._extract_goal_minute_from_block(row)
                     minute_raw = self._normalize_minute_raw(minute_text)
-                    player_name = self._extract_goal_player_from_row(row, body=body)
-                    if not player_name:
+                    minute, _added = self._parse_minute(minute_raw)
+                    if minute is None:
                         continue
+                    player_name, assist_player_name = self._extract_goal_players(row, soup=body)
                     parsed = self._build_goal_event(
                         {
                             "type": "goal",
                             "minute": minute_raw,
-                            "text": f"{minute_raw} {player_name} goal".strip(),
+                            "text": f"{minute_raw} {(player_name or 'unknown')} goal".strip(),
                             "player": player_name,
                             "side": self._extract_goal_side_from_row(row),
                         }
                     )
                     if parsed is not None:
-                        parsed["assist_player_name"] = self._extract_assist_player_from_row(row)
+                        parsed["assist_player_name"] = assist_player_name
                         events.append(parsed)
                 return self._dedupe_events(events)
 
@@ -653,41 +654,45 @@ class MatchParser:
         return None
 
     def _extract_goal_players(self, row: Any, soup: Any = None) -> tuple[str | None, str | None]:
-        if hasattr(row, "select_one"):
-            player_name = self._extract_goal_player_from_soup_row(row, soup)
-            assist_player_name = self._extract_assist_player_from_soup_row(row)
+        player_name: str | None = None
+        assist_player_name: str | None = None
 
-            # Fallback explícito: anchors visibles en orden, ignorando vacíos y etiquetas no-jugador.
-            if not player_name:
-                for a in row.select('a[data-cy="event"]'):
-                    attrs = " ".join(a.get("class", []))
-                    text = self._clean_player_name(a.get_text(" ", strip=True))
-                    if not self._is_valid_goal_player_name(text):
+        if hasattr(row, "select_one"):
+            # 1) Popup si existe.
+            if soup is not None and hasattr(soup, "select_one"):
+                for link in row.select('a[href^="#popup_event"]'):
+                    href = link.get("href")
+                    if not href:
                         continue
-                    if "color-grey2" in attrs:
-                        if not assist_player_name:
-                            assist_player_name = text
+                    popup = soup.select_one(href)
+                    if not popup:
                         continue
-                    player_name = text
-                    break
-            if not assist_player_name:
-                seen_primary = False
-                for a in row.select('a[data-cy="event"]'):
-                    attrs = " ".join(a.get("class", []))
-                    text = self._clean_player_name(a.get_text(" ", strip=True))
-                    if not self._is_valid_goal_player_name(text):
-                        continue
-                    if "color-grey2" in attrs:
-                        assist_player_name = text
-                        break
-                    if seen_primary:
-                        assist_player_name = text
-                        break
-                    if player_name and text == player_name:
-                        seen_primary = True
+                    for item in popup.select("li, .item-box, .right-content, .event-item, .table-played-match"):
+                        text_node = item.select_one("a.main-text")
+                        name = self._clean_player_name(text_node.get_text(" ", strip=True)) if text_node else None
+                        if not self._is_valid_goal_player_name(name):
+                            continue
+                        if item.select_one(".event-1, .img-ico.event-1"):
+                            player_name = player_name or name
+                        elif item.select_one(".event-22, .img-ico.event-22"):
+                            assist_player_name = assist_player_name or name
+
+            # 2) Fallback: anchors visibles, recorriendo todos e ignorando vacíos/invalidos.
+            for anchor in row.select('a[data-cy="event"]'):
+                text = self._clean_player_name(anchor.get_text(" ", strip=True))
+                if not self._is_valid_goal_player_name(text):
+                    continue
+                classes = set(anchor.get("class") or [])
+                if "color-grey2" in classes:
+                    assist_player_name = assist_player_name or text
+                else:
+                    player_name = player_name or text
             return player_name, assist_player_name
+
         row_text = str(row)
-        return self._extract_goal_player_from_row(row_text, body=row_text), self._extract_assist_player_from_row(row_text)
+        player_name = self._extract_goal_player_from_row(row_text, body=str(soup) if isinstance(soup, str) else row_text)
+        assist_player_name = self._extract_assist_player_from_row(row_text)
+        return player_name, assist_player_name
 
     @staticmethod
     def _is_valid_goal_player_name(text: str | None) -> bool:
