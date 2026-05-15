@@ -1,4 +1,9 @@
 from pathlib import Path
+import pytest
+try:
+    from bs4 import BeautifulSoup
+except Exception:  # pragma: no cover
+    BeautifulSoup = None
 
 from besoccer_scraper.infrastructure.parsers.match_parser import MatchParser
 
@@ -101,3 +106,25 @@ def test_match_parser_keeps_metadata_basic():
     assert meta["score"] == "1-2"
     assert meta["status"] == "FIN"
     assert meta["venue"] == "Estadio Mazatlán El Kraken"
+
+
+@pytest.mark.skipif(BeautifulSoup is None, reason="bs4 not installed")
+def test_match_parser_contract_real_like_snapshot_counts():
+    html = _snapshot_html() or _fixture_html()
+    soup = BeautifulSoup(html, "html.parser")
+    assert soup.select_one("#events-goals")
+    assert len(soup.select("#events-goals .table-played-match")) >= 3
+    assert soup.select_one("#mod_stats")
+    m = MatchParser().parse_match(
+        html,
+        url="https://es.besoccer.com/partido/mazatlan-fc/fc-juarez/2026239018",
+        competition_slug="clausura_mexico",
+        round_label="JORNADA1",
+        season_key="clausura-2026",
+    )
+    assert len(m.payload["events_json"]) == 3
+    assert len(m.payload["stats_json"]) > 0
+    assert m.payload["home_team_name"] == "Mazatlán"
+    assert m.payload["away_team_name"] == "FC Juárez"
+    assert m.payload["metadata"]["status"] == "FIN"
+    assert "parser_debug_counts" in m.payload["metadata"]
