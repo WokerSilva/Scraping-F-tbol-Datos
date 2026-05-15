@@ -328,18 +328,19 @@ class MatchParser:
             rows = panel.select(".table-played-match")
             if rows:
                 for row in rows:
-                    if not (row.select_one('img[alt="Gol"]') or row.select_one('img[src*="accion1"]') or row.select_one(".event-1")):
+                    if not self._is_goal_row(row):
                         continue
-                    minute_node = row.select_one(".min, .minute")
-                    minute_raw = self._normalize_minute_raw(minute_node.get_text(" ", strip=True) if minute_node else "")
-                    player_name = self._extract_goal_player_from_soup_row(row, soup)
-                    if not self._is_valid_goal_player_name(player_name):
+                    minute_info = self._extract_goal_minute(row)
+                    minute_raw = minute_info.get("minute_raw") or ""
+                    if minute_info.get("minute") is None:
                         continue
-                    parsed = self._build_goal_event({"type": "goal", "minute": minute_raw, "text": f"{minute_raw} {player_name} goal", "player": player_name, "side": self._extract_goal_side_from_row(str(row))})
+                    player_name, assist_player_name = self._extract_goal_players(row, soup=soup)
+                    text_player = player_name if player_name else "unknown"
+                    parsed = self._build_goal_event({"type": "goal", "minute": minute_raw, "text": f"{minute_raw} {text_player} goal", "player": player_name, "side": self._extract_goal_side_from_row(str(row))})
                     if parsed is not None:
-                        parsed["assist_player_name"] = self._extract_assist_player_from_soup_row(row)
+                        parsed["assist_player_name"] = assist_player_name
                         events.append(parsed)
-                return self._dedupe_goal_events(events)
+                return self._dedupe_events(events)
             panel_text = panel.get_text(" ", strip=True)
             return self._extract_text_goals(panel_text)
         return self._extract_events_regex(payload, html)
@@ -377,7 +378,7 @@ class MatchParser:
                     if parsed is not None:
                         parsed["assist_player_name"] = self._extract_assist_player_from_row(row)
                         events.append(parsed)
-                return self._dedupe_goal_events(events)
+                return self._dedupe_events(events)
 
             # Fallback textual para HTML mínimo (cuando existe #events-goals pero sin rows estructurados).
             return self._extract_text_goals(self._clean_html_text(body))
@@ -389,7 +390,7 @@ class MatchParser:
                 parsed = self._build_goal_event(event)
                 if parsed is not None:
                     events.append(parsed)
-        return self._dedupe_goal_events(events)
+        return self._dedupe_events(events)
 
     def _extract_text_goals(self, text: str) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -440,9 +441,10 @@ class MatchParser:
         return None
 
     def _extract_assist_player_from_soup_row(self, row: Any) -> str | None:
-        a = row.select_one('a.color-grey2, .event-22 a')
-        if a:
-            return self._clean_player_name(a.get_text(" ", strip=True))
+        for a in row.select('a.color-grey2, .event-22 a'):
+            name = self._clean_player_name(a.get_text(" ", strip=True))
+            if self._is_valid_goal_player_name(name):
+                return name
         names: list[str] = []
         for item in row.select('a[data-cy="event"]'):
             name = self._clean_player_name(item.get_text(" ", strip=True))
@@ -554,18 +556,30 @@ class MatchParser:
         for event in events:
             minute_key = str(event.get("minute_raw") or self._normalize_minute_key(event.get("minute"), event.get("added_time"), event.get("minute_raw")))
             player_key = re.sub(r"\s+", " ", str(event.get("player_name") or "").strip().lower())
+            assist_key = re.sub(r"\s+", " ", str(event.get("assist_player_name") or "").strip().lower())
             side_key = str(event.get("team_side") or "").strip().lower()
-            key = (str(event.get("event_type") or "").strip().lower(), minute_key, player_key, side_key)
+            key = (str(event.get("event_type") or "").strip().lower(), minute_key, player_key, assist_key, side_key)
             if key in seen:
                 continue
             seen.add(key)
             deduped.append(event)
         return deduped
 
+    def _dedupe_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self._dedupe_goal_events(events)
+
     @staticmethod
-    def _is_goal_row(row: str) -> bool:
-        lowered = row.lower()
-        return ('alt="gol"' in lowered) or ("accion1" in lowered) or ('event-1' in lowered)
+    def _is_goal_row(row: Any) -> bool:
+        if hasattr(row, "select_one"):
+            text = row.get_text(" ", strip=True).lower()
+            return bool(
+                row.select_one('img[alt="Gol"]')
+                or row.select_one('img[src*="accion1"]')
+                or row.select_one(".event-1")
+                or ("goal" in text)
+            )
+        lowered = str(row).lower()
+        return ('alt="gol"' in lowered) or ("accion1" in lowered) or ('event-1' in lowered) or ("goal" in lowered)
 
     @staticmethod
     def _extract_goal_side_from_row(row: str) -> str | None:
@@ -588,6 +602,25 @@ class MatchParser:
         if m.group(2):
             return f"{m.group(1)}+{m.group(2)}"
         return m.group(1)
+
+    def _extract_goal_minute(self, row: Any) -> dict[str, Any]:
+        minute_text = ""
+        if hasattr(row, "select_one"):
+            minute_node = row.select_one(".min, .minute")
+            minute_text = minute_node.get_text(" ", strip=True) if minute_node else ""
+        else:
+            minute_text = self._extract_goal_minute_from_block(str(row))
+        return self._normalize_minute(minute_text)
+
+    def _normalize_minute(self, text: str) -> dict[str, Any]:
+        minute_raw = self._normalize_minute_raw(text)
+        minute, added_time = self._parse_minute(minute_raw)
+        return {
+            "minute_raw": minute_raw or None,
+            "minute": minute,
+            "added_time": added_time,
+            "half": self.classify_half_by_minute(minute=minute, added_time=added_time, raw_text=minute_raw),
+        }
 
     @staticmethod
     def _normalize_minute_raw(value: str) -> str:
@@ -617,12 +650,49 @@ class MatchParser:
                 return text
         return None
 
+    def _extract_goal_players(self, row: Any, soup: Any = None) -> tuple[str | None, str | None]:
+        if hasattr(row, "select_one"):
+            player_name = self._extract_goal_player_from_soup_row(row, soup)
+            assist_player_name = self._extract_assist_player_from_soup_row(row)
+
+            # Fallback explícito: anchors visibles en orden, ignorando vacíos y etiquetas no-jugador.
+            if not player_name:
+                for a in row.select('a[data-cy="event"]'):
+                    attrs = " ".join(a.get("class", []))
+                    text = self._clean_player_name(a.get_text(" ", strip=True))
+                    if not self._is_valid_goal_player_name(text):
+                        continue
+                    if "color-grey2" in attrs:
+                        if not assist_player_name:
+                            assist_player_name = text
+                        continue
+                    player_name = text
+                    break
+            if not assist_player_name:
+                seen_primary = False
+                for a in row.select('a[data-cy="event"]'):
+                    attrs = " ".join(a.get("class", []))
+                    text = self._clean_player_name(a.get_text(" ", strip=True))
+                    if not self._is_valid_goal_player_name(text):
+                        continue
+                    if "color-grey2" in attrs:
+                        assist_player_name = text
+                        break
+                    if seen_primary:
+                        assist_player_name = text
+                        break
+                    if player_name and text == player_name:
+                        seen_primary = True
+            return player_name, assist_player_name
+        row_text = str(row)
+        return self._extract_goal_player_from_row(row_text, body=row_text), self._extract_assist_player_from_row(row_text)
+
     @staticmethod
     def _is_valid_goal_player_name(text: str | None) -> bool:
         if not text:
             return False
         lowered = text.lower()
-        if lowered in {"sustituciones", "substitutions"}:
+        if lowered in {"sustituciones", "substitutions", "gol", "asistencia"}:
             return False
         if text in {"+2"}:
             return False
