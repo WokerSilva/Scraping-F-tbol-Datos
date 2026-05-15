@@ -11,6 +11,14 @@ class CompetitionRepository(Protocol):
 
 class MatchRepository(Protocol):
     def upsert_many(self, matches: Iterable[Match]) -> int: ...
+    def list_matches_for_rescrape(
+        self,
+        *,
+        competition_slug: str,
+        season_key: str,
+        limit: int | None = None,
+        source_match_id: str | None = None,
+    ) -> list[dict]: ...
 
 
 class AuditRepository(Protocol):

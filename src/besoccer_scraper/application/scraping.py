@@ -61,6 +61,7 @@ class ScrapeMatchesUseCase:
                     round_label=target.get("round_label"),
                     season_key=season_key or target.get("season_key"),
                 )
+                parsed_match.payload.setdefault("metadata", {})["parser_version"] = "match_parser_mx_cleanup_v1"
                 parsed_match.payload["raw_page_id"] = raw_page_id
                 self._upsert_parsed_match(parsed_match)
                 counters["matches_upserted"] += 1
@@ -113,6 +114,7 @@ class ScrapeMatchesUseCase:
             round_label=round_label,
             season_key=season_key,
         )
+        parsed_match.payload.setdefault("metadata", {})["parser_version"] = "match_parser_mx_cleanup_v1"
         parsed_match.payload["raw_page_id"] = raw_page_id
         self._upsert_parsed_match(parsed_match)
         if target_id is not None:
@@ -135,6 +137,75 @@ class ScrapeMatchesUseCase:
         print(f"match summary: source_match_id={summary['source_match_id']} competition={summary['competition']} round={summary['round']} score={summary['score']} stats_count={stats_count} events_count={events_count}")
         self.uow.commit()
         return summary
+
+    def execute_rescrape_matches(
+        self,
+        *,
+        competition_slug: str,
+        season_key: str,
+        limit: int | None = None,
+        source_match_id: str | None = None,
+        debug_html: bool = False,
+    ) -> dict[str, Any]:
+        selected_matches = list(
+            self.uow.matches.list_matches_for_rescrape(
+                competition_slug=competition_slug,
+                season_key=season_key,
+                limit=limit,
+                source_match_id=source_match_id,
+            )
+        )
+        counters = {"selected": len(selected_matches), "parsed": 0, "failed": 0, "raw_pages_saved": 0, "matches_upserted": 0}
+        stats_total = 0
+        events_total = 0
+        for stored_match in selected_matches:
+            match_url = str(stored_match.get("url") or "")
+            if not match_url:
+                counters["failed"] += 1
+                continue
+            try:
+                html = self.http_client.get(match_url)
+                if debug_html:
+                    debug_path = self._save_debug_html(target=stored_match, html=html)
+                    print(f"Debug HTML saved: {debug_path}")
+                raw_page_id = self._save_raw_page(match_url, html, enabled=True)
+                if raw_page_id is not None:
+                    counters["raw_pages_saved"] += 1
+                parsed_match = self.parser.parse_match(
+                    html,
+                    url=match_url,
+                    competition_slug=competition_slug,
+                    round_label=stored_match.get("round_label"),
+                    season_key=stored_match.get("season_key") or season_key,
+                )
+                parsed_match.payload.setdefault("metadata", {})["parser_version"] = "match_parser_mx_cleanup_v1"
+                parsed_match.payload["raw_page_id"] = raw_page_id
+                self._upsert_parsed_match(parsed_match)
+                counters["parsed"] += 1
+                counters["matches_upserted"] += 1
+                stats_total += len(parsed_match.payload.get("stats_json") or {})
+                events_total += len(parsed_match.payload.get("events_json") or [])
+            except Exception:  # noqa: BLE001
+                counters["failed"] += 1
+                if hasattr(self.uow, "session") and getattr(self.uow, "session") is not None:
+                    try:
+                        self.uow.session.rollback()
+                    except Exception:
+                        pass
+        parsed = counters["parsed"]
+        avg_stats_count = (stats_total / parsed) if parsed else 0.0
+        avg_events_count = (events_total / parsed) if parsed else 0.0
+        counters["avg_stats_count"] = round(avg_stats_count, 1)
+        counters["avg_events_count"] = round(avg_events_count, 1)
+        print(f"selected={counters['selected']}")
+        print(f"parsed={counters['parsed']}")
+        print(f"failed={counters['failed']}")
+        print(f"raw_pages_saved={counters['raw_pages_saved']}")
+        print(f"matches_upserted={counters['matches_upserted']}")
+        print(f"avg_stats_count={counters['avg_stats_count']}")
+        print(f"avg_events_count={counters['avg_events_count']}")
+        self.uow.commit()
+        return counters
 
     def _select_targets(self, *, limit: int) -> list[dict[str, Any]]:
         repository: PendingBatchTargetRepository = self.uow.scrape_targets

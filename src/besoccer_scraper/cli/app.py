@@ -72,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
     scrape_pending.add_argument("--season-key", required=True)
     scrape_pending.add_argument("--limit", type=int, default=20)
     scrape_pending.add_argument("--debug-html", action="store_true", default=False)
+    scrape_rescrape = scrape_sub.add_parser("rescrape-matches")
+    scrape_rescrape.set_defaults(scrape_mode="rescrape-matches")
+    scrape_rescrape.add_argument("--competition", required=True)
+    scrape_rescrape.add_argument("--season-key", required=True)
+    scrape_rescrape.add_argument("--limit", type=int, default=None)
+    scrape_rescrape.add_argument("--source-match-id", default=None)
+    scrape_rescrape.add_argument("--debug-html", action="store_true", default=False)
 
     audit = sub.add_parser("audit")
     audit_sub = audit.add_subparsers(dest="audit_mode", required=True)
