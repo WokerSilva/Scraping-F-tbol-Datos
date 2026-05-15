@@ -233,7 +233,7 @@ class MatchParser:
 
     def _extract_stats_from_html(self, html: str) -> dict[str, Any]:
         module_match = re.search(
-            r'<(?:section|div)[^>]+id="mod_stats"[^>]*>(?P<body>.*?)</(?:section|div)>',
+            r"""<(?:section|div)[^>]+id=["']mod_stats["'][^>]*>(?P<body>.*?)</(?:section|div)>""",
             html,
             flags=re.IGNORECASE | re.DOTALL,
         )
@@ -303,20 +303,45 @@ class MatchParser:
         return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        goals_section = re.search(r'<section[^>]+id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
+        goals_section = re.search(r"""<section[^>]+id=["']events-goals["'][^>]*>(?P<body>.*?)</section>""", html, flags=re.IGNORECASE | re.DOTALL)
         events: list[dict[str, Any]] = []
 
         # Prioridad: usar solo #events-goals cuando exista.
         if goals_section:
             body = goals_section.group("body")
             rows = re.findall(r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?</div>)', body, flags=re.IGNORECASE | re.DOTALL)
-            for row in rows:
-                if not self._is_goal_row(row):
-                    continue
-                minute_text = self._extract_goal_minute_from_block(row)
-                minute_raw = self._normalize_minute_raw(minute_text)
-                player_name = self._extract_goal_player_from_row(row, body=body)
-                if not player_name:
+            if rows:
+                for row in rows:
+                    if not self._is_goal_row(row):
+                        continue
+                    minute_text = self._extract_goal_minute_from_block(row)
+                    minute_raw = self._normalize_minute_raw(minute_text)
+                    player_name = self._extract_goal_player_from_row(row, body=body)
+                    if not player_name:
+                        continue
+                    parsed = self._build_goal_event(
+                        {
+                            "type": "goal",
+                            "minute": minute_raw,
+                            "text": f"{minute_raw} {player_name} goal".strip(),
+                            "player": player_name,
+                            "side": self._extract_goal_side_from_row(row),
+                        }
+                    )
+                    if parsed is not None:
+                        parsed["assist_player_name"] = self._extract_assist_player_from_row(row)
+                        events.append(parsed)
+                return self._dedupe_goal_events(events)
+
+            # Fallback textual para HTML mínimo (cuando existe #events-goals pero sin rows estructurados).
+            for match in re.finditer(
+                r"(?P<minute>\d{1,3}(?:\+\d+)?)['’]?\s+(?P<player>.+?)\s+goal\b",
+                self._clean_html_text(body),
+                flags=re.IGNORECASE,
+            ):
+                minute_raw = self._normalize_minute_raw(match.group("minute"))
+                player_name = self._clean_player_name(match.group("player"))
+                if not self._is_valid_goal_player_name(player_name):
                     continue
                 parsed = self._build_goal_event(
                     {
@@ -324,11 +349,10 @@ class MatchParser:
                         "minute": minute_raw,
                         "text": f"{minute_raw} {player_name} goal".strip(),
                         "player": player_name,
-                        "side": self._extract_goal_side_from_row(row),
+                        "side": "unknown",
                     }
                 )
                 if parsed is not None:
-                    parsed["assist_player_name"] = self._extract_assist_player_from_row(row)
                     events.append(parsed)
             return self._dedupe_goal_events(events)
 
