@@ -116,34 +116,24 @@ class BrowserCompetitionRenderer:
                 body_len = len(self._body_text(page))
                 raise HttpFetchError(f"No se pudo extraer página de competición. La página renderizada no contiene selector de jornadas ni partidos. Debug: {debug}. Status: {response.status}. Final URL: {page.url}. Body length: {body_len}", url=url)
 
-            select = page.locator(select_selector)
-            options = select.locator("option")
-            count = options.count()
-            for idx in range(count):
-                option = options.nth(idx)
-                value = (option.get_attribute("value") or "").strip()
-                label = (option.inner_text() or "").strip() or f"round-{idx+1}"
-                self._set_round_via_js(page=page, selector=select_selector, value=value, index=idx)
-                page.wait_for_timeout(self.wait_after_load_ms)
-                page.wait_for_selector('a[href*="/partido/"]', state="attached", timeout=5_000)
-                dom = page.evaluate(
-                    """() => {
-                        const scope = document.querySelector('#mod_mainCompetitionRounds') || document.querySelector('.comp-matches') || document.querySelector('.panel-body.match-list-new') || document.querySelector('main');
-                        const globalAnchors = Array.from(document.querySelectorAll('a[href*="/partido/"]'));
-                        const scopedAnchors = scope ? Array.from(scope.querySelectorAll('a[href*="/partido/"]')) : [];
-                        const matches = [];
-                        const seen = new Set();
-                        for (const a of scopedAnchors) {
-                            const href = a.getAttribute('href') || '';
-                            const id = href.split('/').filter(Boolean).pop() || '';
-                            if (!href || seen.has(id)) continue;
-                            seen.add(id);
-                            matches.push({url: href, source_match_id: id, scope_hint: '#mod_mainCompetitionRounds'});
-                        }
-                        return {matches, diagnostics: {match_anchor_count_global: globalAnchors.length, match_anchor_count_scoped: scopedAnchors.length, scope_found: Boolean(scope)}};
-                    }"""
-                )
-                round_results.append({"round_label": label, "matches": dom.get("matches", []), "diagnostics": dom.get("diagnostics", {})})
+            options_meta = self._extract_round_options(page=page, selector=select_selector)
+            previous_ids: set[str] = set()
+            for option in options_meta:
+                requested_round = str(option.get("normalized_label") or option.get("label") or "").strip()
+                if not requested_round:
+                    continue
+                attempts = 0
+                dom: dict[str, Any] = {"matches": [], "diagnostics": {}}
+                while attempts < 3:
+                    attempts += 1
+                    self._select_round(page=page, selector=select_selector, value=str(option.get("value", "")), label=str(option.get("label", "")), index=int(option.get("index", 0)))
+                    page.wait_for_timeout(self.wait_after_load_ms)
+                    dom = self._extract_round_dom(page=page)
+                    current_ids = {str(item.get("source_match_id", "")).strip() for item in dom.get("matches", []) if str(item.get("source_match_id", "")).strip()}
+                    if current_ids and (not previous_ids or current_ids != previous_ids):
+                        previous_ids = current_ids
+                        break
+                round_results.append({"round_label": requested_round, "requested_round": requested_round, "matches": dom.get("matches", []), "diagnostics": {**dom.get("diagnostics", {}), "attempts": attempts}})
 
             context.close()
             browser.close()
@@ -274,6 +264,63 @@ class BrowserCompetitionRenderer:
             }""",
             [selector, value, index],
         )
+
+    def _select_round(self, *, page: object, selector: str, value: str, label: str, index: int) -> None:
+        try:
+            if value:
+                page.locator(selector).select_option(value=value, timeout=2_000)
+            elif label:
+                page.locator(selector).select_option(label=label, timeout=2_000)
+            else:
+                page.locator(selector).select_option(index=index, timeout=2_000)
+        except Exception:
+            self._set_round_via_js(page=page, selector=selector, value=value, index=index)
+
+    def _extract_round_options(self, *, page: object, selector: str) -> list[dict[str, object]]:
+        raw = page.evaluate(
+            """(selector) => {
+                const el = document.querySelector(selector);
+                if (!el) return [];
+                return Array.from(el.options || []).map((opt, index) => ({
+                    value: String(opt.value || '').trim(),
+                    label: String(opt.textContent || '').trim(),
+                    index
+                }));
+            }""",
+            selector,
+        )
+        out: list[dict[str, object]] = []
+        for item in raw:
+            label = str(item.get("label", "")).strip()
+            normalized = self._normalize_round_label(label)
+            if normalized:
+                out.append({"value": str(item.get("value", "")).strip(), "label": label, "index": int(item.get("index", 0)), "normalized_label": normalized})
+        return sorted(out, key=lambda x: int(self._normalize_round_label(str(x["normalized_label"])).replace("JORNADA", "")))
+
+    def _extract_round_dom(self, *, page: object) -> dict[str, Any]:
+        page.wait_for_selector('#mod_mainCompetitionRounds, .comp-matches, .panel-body.match-list-new, main', state="attached", timeout=8_000)
+        return page.evaluate(
+            """() => {
+                const scope = document.querySelector('#mod_mainCompetitionRounds') || document.querySelector('.comp-matches') || document.querySelector('.panel-body.match-list-new') || document.querySelector('main');
+                const globalAnchors = Array.from(document.querySelectorAll('a[href*="/partido/"]'));
+                const scopedAnchors = scope ? Array.from(scope.querySelectorAll('a[href*="/partido/"]')) : [];
+                const matches = [];
+                const seen = new Set();
+                for (const a of scopedAnchors) {
+                    const href = a.getAttribute('href') || '';
+                    const id = href.split('/').filter(Boolean).pop() || '';
+                    if (!href || !id || seen.has(id)) continue;
+                    seen.add(id);
+                    matches.push({url: href, source_match_id: id, scope_hint: '#mod_mainCompetitionRounds'});
+                }
+                return {matches, diagnostics: {match_anchor_count_global: globalAnchors.length, match_anchor_count_scoped: scopedAnchors.length, scope_found: Boolean(scope)}};
+            }"""
+        )
+
+    @staticmethod
+    def _normalize_round_label(label: str) -> str:
+        digits = "".join(ch for ch in label if ch.isdigit())
+        return f"JORNADA{int(digits)}" if digits else ""
 
     @staticmethod
     def _dismiss_cookies(page: object) -> None:
