@@ -34,6 +34,7 @@ def run_discover(container: object, args: object) -> int:
                 debug=getattr(args, "debug", False),
                 sample_size=getattr(args, "sample_size", 3),
                 allow_partial=getattr(args, "allow_partial", False),
+                require_complete=getattr(args, "require_complete", False),
             )
         except ScrapeBlockedError as exc:
             if exc.status_code == 406:

@@ -678,15 +678,34 @@ class MatchParser:
                             assist_player_name = assist_player_name or name
 
             # 2) Fallback: anchors visibles, recorriendo todos e ignorando vacíos/invalidos.
-            for anchor in row.select('a[data-cy="event"]'):
-                text = self._clean_player_name(anchor.get_text(" ", strip=True))
-                if not self._is_valid_goal_player_name(text):
-                    continue
-                classes = set(anchor.get("class") or [])
-                if "color-grey2" in classes:
-                    assist_player_name = assist_player_name or text
-                else:
-                    player_name = player_name or text
+            if player_name is None or assist_player_name is None:
+                clean_names: list[tuple[str, bool]] = []
+                for anchor in row.select('a[data-cy="event"]'):
+                    text = self._clean_player_name(anchor.get_text(" ", strip=True))
+                    if not self._is_valid_goal_player_name(text):
+                        continue
+                    classes = set(anchor.get("class") or [])
+                    is_assist_hint = "color-grey2" in classes
+                    clean_names.append((text, is_assist_hint))
+
+                if player_name is None:
+                    for name, is_assist_hint in clean_names:
+                        if not is_assist_hint:
+                            player_name = name
+                            break
+                    if player_name is None and clean_names:
+                        player_name = clean_names[0][0]
+
+                if assist_player_name is None:
+                    for name, is_assist_hint in clean_names:
+                        if is_assist_hint and name != player_name:
+                            assist_player_name = name
+                            break
+                    if assist_player_name is None:
+                        for name, _ in clean_names:
+                            if name != player_name:
+                                assist_player_name = name
+                                break
             return player_name, assist_player_name
 
         row_text = str(row)

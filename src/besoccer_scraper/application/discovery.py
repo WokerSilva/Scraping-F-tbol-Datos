@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -68,7 +69,7 @@ class DiscoverMxSeasonUseCase:
         if self.expected_rounds is None:
             self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
 
-    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False, sample_size: int = 3, allow_partial: bool = False) -> list[dict[str, str]]:
+    def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False, sample_size: int = 3, allow_partial: bool = False, require_complete: bool = False) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
         competition_url = f"https://es.besoccer.com/competicion/resultados/{competition_slug}/{year}"
         force_browser = competition_slug in {"clausura_mexico", "apertura_mexico"}
@@ -125,6 +126,10 @@ class DiscoverMxSeasonUseCase:
                 print(f"round_options_found={summary.get('round_options_found')}")
                 print(f"match_anchor_count_global={summary.get('match_anchor_count_global')}")
                 print(f"match_anchor_count_scoped={summary.get('match_anchor_count_scoped')}")
+        if require_complete and coverage_status != "complete":
+            raise RuntimeError(
+                f"Discovery incompleto para {competition_slug} {year}: rounds_detected={rounds_detected}/{rounds_expected} targets_found={len(rows)}/{153}"
+            )
         if persist and not dry_run and coverage_status == "partial" and not allow_partial:
             print("Discovery parcial: no se persiste sin --allow-partial")
             print(f"missing_rounds={missing_rounds}")
@@ -133,18 +138,22 @@ class DiscoverMxSeasonUseCase:
         if persist and not dry_run:
             inserted = 0
             updated = 0
+            updated_safe = 0
             skipped_existing = 0
             for row in rows:
-                outcome = self.team_use_case.uow.scrape_targets.upsert_target(source_name="besoccer", target_type="match_page", url=row["url"], source_match_id=row["source_match_id"], payload={"source_competition_slug": competition_slug, "season_key": season_key, "round_label": row["round_label"], "status": "pending", "metadata_json": {"discovery_strategy": "browser_dom_rounds", "coverage_status": coverage_status, "year": year, "competition": competition_slug}})
+                outcome = self.team_use_case.uow.scrape_targets.upsert_target(source_name="besoccer", target_type="match_page", url=row["url"], source_match_id=row["source_match_id"], payload={"source_competition_slug": competition_slug, "season_key": season_key, "round_label": row["round_label"], "status": "pending", "metadata_json": {"discovery_strategy": "browser_dom_rounds", "last_discovery_strategy": "browser_dom_rounds", "coverage_status": coverage_status, "year": year, "competition": competition_slug, "last_seen_at": datetime.now(timezone.utc).isoformat(), "discovery_last_seen_at": datetime.now(timezone.utc).isoformat()}})
                 if isinstance(outcome, dict):
                     inserted += 1 if outcome.get("inserted") else 0
                     updated += 1 if outcome.get("updated") else 0
+                    updated_safe += 1 if outcome.get("updated_safe") else 0
+                    skipped_existing += 1 if outcome.get("skipped_existing") else 0
                 else:
                     inserted += 1
             self.team_use_case.uow.commit()
             db_total = self.team_use_case.uow.scrape_targets.count_by_competition_season(competition=competition_slug, season_key=season_key)
             print(f"inserted={inserted}")
             print(f"updated={updated}")
+            print(f"updated_safe={updated_safe}")
             print(f"skipped_existing={skipped_existing}")
             print(f"db_total_for_season={db_total}")
             if (inserted + updated) > 0 and db_total == 0:
@@ -163,13 +172,13 @@ class DiscoverMxSeasonUseCase:
         pages.extend(f"{competition_url}/{str(round_label).strip()}" for round_label in rounds if str(round_label).strip())
         for page_url in pages:
             page = self.competition_parser.parse(self.http_client.get(page_url))
-            selected_round = str(page.get("selected_round") or "unknown")
+            requested_round = self._extract_requested_round_from_page_url(page_url) or str(page.get("selected_round") or "unknown")
             for match in page.get("matches", []):
                 source_match_id = str(match.get("source_match_id", "")).strip()
                 relative_url = str(match.get("url", "")).strip()
                 if not source_match_id or not relative_url or source_match_id in discovered:
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(selected_round), "strategy": "competition_rounds_http", "source_page": page_url}
+                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(requested_round), "strategy": "competition_rounds_http", "source_page": page_url}
         return discovered
 
     def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int, debug: bool = False) -> dict[str, dict[str, str]]:
@@ -259,6 +268,13 @@ class DiscoverMxSeasonUseCase:
     def _round_sort_key(label: str) -> tuple[int, str]:
         m = re.search(r"(\d+)", label)
         return (int(m.group(1)) if m else 9999, label)
+
+    @staticmethod
+    def _extract_requested_round_from_page_url(page_url: str) -> str | None:
+        match = re.search(r"/(\d+)\s*$", str(page_url).strip())
+        if not match:
+            return None
+        return f"JORNADA{int(match.group(1))}"
 
     def _should_fallback(self, discovered: dict[str, dict[str, str]]) -> bool:
         return not discovered

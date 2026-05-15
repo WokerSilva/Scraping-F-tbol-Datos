@@ -149,17 +149,48 @@ class RunLocksRepository(BaseRepository):
 
 class PostgresTargetRepository(ScrapeTargetsRepository):
     def upsert_target(self, *, source_name: str, target_type: str, url: str, source_match_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+        if source_match_id:
+            existing = self.session.execute(
+                text(
+                    """
+                    SELECT id, metadata_json
+                    FROM scrape_targets
+                    WHERE source_name = :source_name
+                      AND target_type = :target_type
+                      AND source_match_id = :source_match_id
+                    LIMIT 1
+                    """
+                ),
+                {"source_name": source_name, "target_type": target_type, "source_match_id": source_match_id},
+            ).mappings().one_or_none()
+            if existing is not None:
+                existing_meta = dict(existing.get("metadata_json") or {})
+                incoming_meta = payload.get("metadata_json") or {}
+                existing_meta.update(
+                    {
+                        "last_seen_at": incoming_meta.get("last_seen_at"),
+                        "discovery_last_seen_at": incoming_meta.get("discovery_last_seen_at"),
+                        "last_discovery_strategy": incoming_meta.get("last_discovery_strategy") or incoming_meta.get("discovery_strategy"),
+                    }
+                )
+                metadata_json = {k: v for k, v in existing_meta.items() if v is not None}
+                self.session.execute(
+                    text(
+                        """
+                        UPDATE scrape_targets
+                        SET metadata_json = :metadata_json, updated_at = NOW()
+                        WHERE id = :id
+                        """
+                    ).bindparams(bindparam("metadata_json", type_=JSONB)),
+                    {"id": int(existing["id"]), "metadata_json": metadata_json},
+                )
+                return {"id": int(existing["id"]), "inserted": False, "updated": False, "updated_safe": True, "skipped_existing": True}
         query = text(
             """
             INSERT INTO scrape_targets (source_name, target_type, url, source_match_id, source_competition_slug, season_key, round_label, status, metadata_json)
             VALUES (:source_name, :target_type, :url, :source_match_id, :source_competition_slug, :season_key, :round_label, :status, :metadata_json)
             ON CONFLICT (source_name, target_type, url)
             DO UPDATE SET
-                source_match_id = EXCLUDED.source_match_id,
-                source_competition_slug = EXCLUDED.source_competition_slug,
-                season_key = EXCLUDED.season_key,
-                round_label = EXCLUDED.round_label,
-                status = EXCLUDED.status,
                 metadata_json = EXCLUDED.metadata_json,
                 updated_at = NOW()
             RETURNING id, (xmax = 0) AS inserted
@@ -179,7 +210,14 @@ class PostgresTargetRepository(ScrapeTargetsRepository):
                 "metadata_json": payload.get("metadata_json") or payload,
             },
         ).one()
-        return {"id": int(row[0]), "inserted": bool(row[1]), "updated": not bool(row[1])}
+        inserted = bool(row[1])
+        return {
+            "id": int(row[0]),
+            "inserted": inserted,
+            "updated": False,
+            "updated_safe": (not inserted),
+            "skipped_existing": (not inserted),
+        }
 
     def list_recent_by_competition_season(self, *, competition: str, season_key: str, limit: int = 10) -> list[dict[str, Any]]:
         query = text(
@@ -442,6 +480,36 @@ class PostgresMatchRepository(MatchesRepository):
             {"competition": competition, "season_key": season_key},
         ).one()
         return int(row[0])
+
+    def list_matches_for_rescrape(
+        self,
+        *,
+        competition_slug: str,
+        season_key: str,
+        limit: int | None = None,
+        source_match_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT
+                id,
+                source_match_id,
+                url,
+                source_competition_slug,
+                season_key,
+                round_label
+            FROM matches
+            WHERE source_competition_slug = :competition_slug
+              AND season_key = :season_key
+        """
+        params: dict[str, Any] = {"competition_slug": competition_slug, "season_key": season_key}
+        if source_match_id is not None:
+            sql += " AND source_match_id = :source_match_id"
+            params["source_match_id"] = str(source_match_id)
+        sql += " ORDER BY id"
+        if limit is not None:
+            sql += " LIMIT :limit"
+            params["limit"] = int(limit)
+        return list(self.session.execute(text(sql), params).mappings())
 
 
 class PostgresRunRepository(JobRunsRepository):
