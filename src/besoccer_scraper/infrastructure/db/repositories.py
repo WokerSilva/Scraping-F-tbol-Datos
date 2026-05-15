@@ -443,6 +443,36 @@ class PostgresMatchRepository(MatchesRepository):
         ).one()
         return int(row[0])
 
+    def list_matches_for_rescrape(
+        self,
+        *,
+        competition_slug: str,
+        season_key: str,
+        limit: int | None = None,
+        source_match_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT
+                id,
+                source_match_id,
+                url,
+                source_competition_slug,
+                season_key,
+                round_label
+            FROM matches
+            WHERE source_competition_slug = :competition_slug
+              AND season_key = :season_key
+        """
+        params: dict[str, Any] = {"competition_slug": competition_slug, "season_key": season_key}
+        if source_match_id is not None:
+            sql += " AND source_match_id = :source_match_id"
+            params["source_match_id"] = str(source_match_id)
+        sql += " ORDER BY id"
+        if limit is not None:
+            sql += " LIMIT :limit"
+            params["limit"] = int(limit)
+        return list(self.session.execute(text(sql), params).mappings())
+
 
 class PostgresRunRepository(JobRunsRepository):
     def start_run(self, *, job_name: str, metadata: dict[str, Any] | None = None) -> int:
