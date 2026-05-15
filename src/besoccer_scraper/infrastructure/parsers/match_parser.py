@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -77,6 +78,11 @@ class MatchParser:
             metadata["score"] = self._extract_score_from_description(page_data)
         metadata["home_team_name"] = home_team
         metadata["away_team_name"] = away_team
+        if not home_team or not away_team:
+            metadata_home = self._extract_metadata_value(page_data, ("home_team_name", "homeTeamName", "localTeamName"))
+            metadata_away = self._extract_metadata_value(page_data, ("away_team_name", "awayTeamName", "visitorTeamName"))
+            if metadata_home and metadata_away:
+                home_team, away_team = metadata_home.strip(), metadata_away.strip()
         stats_json = self._extract_stats(page_data, html=html)
         events_json = self._extract_events(page_data, html)
 
@@ -182,7 +188,9 @@ class MatchParser:
     def _extract_status(self, payload: dict[str, Any]) -> str | None:
         event_status = self._extract_metadata_value(payload, ("eventStatus",))
         if event_status:
-            return self._EVENT_STATUS_MAP.get(event_status, event_status)
+            normalized = str(event_status).strip()
+            normalized = normalized.rsplit("/", 1)[-1]
+            return self._EVENT_STATUS_MAP.get(normalized, self._EVENT_STATUS_MAP.get(str(event_status).strip(), str(event_status).strip()))
         return self._extract_metadata_value(payload, ("status", "matchStatus", "state"))
 
     def _extract_score(self, payload: dict[str, Any], html: str) -> str | None:
@@ -278,7 +286,7 @@ class MatchParser:
             body = goals_section.group("body")
             chunks = re.findall(r"(\d{1,3}(?:\+\d+)?'[^']*?)(?=\d{1,3}(?:\+\d+)?'|$)", body, flags=re.IGNORECASE)
             for line in chunks:
-                parsed = self._build_goal_event({"type": "goal", "text": line.strip()})
+                parsed = self._build_goal_event({"type": "goal", "text": line.strip(), "html": line.strip()})
                 if parsed is not None:
                     events.append(parsed)
             return self._dedupe_goal_events(events)
@@ -332,7 +340,9 @@ class MatchParser:
         minute, added_time = self._parse_minute(minute_raw)
         player_name = event.get("player") or event.get("playerName") or event.get("name") or None
         if not player_name:
-            player_name = self._extract_player_name_from_text(text)
+            player_name = self._extract_player_name_from_text(text, html_fragment=str(event.get("html") or ""))
+
+        player_name = self._clean_player_name(player_name)
 
         return {
             "event_type": "goal",
@@ -367,10 +377,24 @@ class MatchParser:
         return not any(token in event_type or token in text for token in blocked_tokens)
 
     @staticmethod
-    def _extract_player_name_from_text(text: str) -> str | None:
+    def _extract_player_name_from_text(text: str, html_fragment: str = "") -> str | None:
+        if html_fragment:
+            anchors = re.findall(r"<a\b[^>]*>(?P<label>.*?)</a>", html_fragment, flags=re.IGNORECASE | re.DOTALL)
+            visible = [MatchParser._clean_html_text(chunk) for chunk in anchors]
+            visible = [chunk for chunk in visible if chunk]
+            if visible:
+                return visible[-1]
         if not text:
             return None
         cleaned = re.sub(r"^\s*\d{1,3}(?:\+\d+)?'\s*", "", text).strip()
+        cleaned = re.sub(r"\b(goal|gol|penalty\s+scored|own\s+goal)\b.*$", "", cleaned, flags=re.I).strip(" -,:;")
+        return cleaned or None
+
+    @staticmethod
+    def _clean_player_name(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        cleaned = MatchParser._clean_html_text(str(value))
         cleaned = re.sub(r"\b(goal|gol|penalty\s+scored|own\s+goal)\b.*$", "", cleaned, flags=re.I).strip(" -,:;")
         return cleaned or None
 
@@ -380,7 +404,8 @@ class MatchParser:
         for event in events:
             minute_key = self._normalize_minute_key(event.get("minute"), event.get("added_time"), event.get("minute_raw"))
             player_key = re.sub(r"\s+", " ", str(event.get("player_name") or "").strip().lower())
-            key = (minute_key, player_key, str(event.get("event_type") or "").strip().lower())
+            side_key = str(event.get("team_side") or "").strip().lower()
+            key = (str(event.get("event_type") or "").strip().lower(), minute_key, player_key, side_key)
             if key in seen:
                 continue
             seen.add(key)
@@ -423,6 +448,7 @@ class MatchParser:
 
     @staticmethod
     def _normalize_stat_key(key: str) -> str:
+        key = unicodedata.normalize("NFKD", key).encode("ascii", "ignore").decode("ascii")
         key = key.strip().lower().replace("%", " percent ")
         key = re.sub(r"[^a-z0-9]+", "_", key)
         key = re.sub(r"_+", "_", key).strip("_")
@@ -432,6 +458,13 @@ class MatchParser:
             "shots_total": "shots_total",
             "shots_on_target": "shots_on_target",
             "corners": "corners",
+            "posesion": "possession",
+            "posesion_percent": "possession",
+            "remates": "shots_total",
+            "tiros": "shots_total",
+            "remates_a_puerta": "shots_on_target",
+            "tiros_a_puerta": "shots_on_target",
+            "saques_de_esquina": "corners",
             "fouls": "fouls",
             "yellow_cards": "yellow_cards",
             "red_cards": "red_cards",
