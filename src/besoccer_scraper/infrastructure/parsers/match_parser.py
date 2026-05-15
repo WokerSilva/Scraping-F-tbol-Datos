@@ -83,6 +83,8 @@ class MatchParser:
             metadata_away = self._extract_metadata_value(page_data, ("away_team_name", "awayTeamName", "visitorTeamName"))
             if metadata_home and metadata_away:
                 home_team, away_team = metadata_home.strip(), metadata_away.strip()
+                metadata["home_team_name"] = home_team
+                metadata["away_team_name"] = away_team
         stats_json = self._extract_stats(page_data, html=html)
         events_json = self._extract_events(page_data, html)
 
@@ -100,6 +102,8 @@ class MatchParser:
                 "competition_slug": competition_slug,
                 "round_label": metadata["round_label"],
                 "season_key": metadata["season_key"],
+                "home_team_name": home_team,
+                "away_team_name": away_team,
                 "metadata": metadata,
                 "stats_json": stats_json,
                 "events_json": events_json,
@@ -278,12 +282,35 @@ class MatchParser:
         return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        goals_section = re.search(r'id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
+        goals_section = re.search(r'<section[^>]+id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
         events: list[dict[str, Any]] = []
 
-        # Prioridad: usar solo el bloque textual de goles cuando exista.
+        # Prioridad: usar solo #events-goals cuando exista.
         if goals_section:
             body = goals_section.group("body")
+            blocks = re.findall(r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?</div>)', body, flags=re.IGNORECASE | re.DOTALL)
+            for block in blocks:
+                if not self._is_goal_block(block):
+                    continue
+                minute_text = self._extract_goal_minute_from_block(block)
+                minute_raw = self._normalize_minute_raw(minute_text)
+                player_name = self._extract_goal_player_from_block(block)
+                if not player_name:
+                    continue
+                parsed = self._build_goal_event(
+                    {
+                        "type": "goal",
+                        "minute": minute_raw,
+                        "text": f"{minute_raw} {player_name} goal".strip(),
+                        "player": player_name,
+                        "side": self._extract_goal_side_from_block(block),
+                    }
+                )
+                if parsed is not None:
+                    parsed["assist_player_name"] = self._extract_assist_player_from_block(block)
+                    events.append(parsed)
+            if events:
+                return self._dedupe_goal_events(events)
             chunks = re.findall(r"(\d{1,3}(?:\+\d+)?'[^']*?)(?=\d{1,3}(?:\+\d+)?'|$)", body, flags=re.IGNORECASE)
             for line in chunks:
                 parsed = self._build_goal_event({"type": "goal", "text": line.strip(), "html": line.strip()})
@@ -402,7 +429,7 @@ class MatchParser:
         deduped: list[dict[str, Any]] = []
         seen: set[tuple[Any, ...]] = set()
         for event in events:
-            minute_key = self._normalize_minute_key(event.get("minute"), event.get("added_time"), event.get("minute_raw"))
+            minute_key = str(event.get("minute_raw") or self._normalize_minute_key(event.get("minute"), event.get("added_time"), event.get("minute_raw")))
             player_key = re.sub(r"\s+", " ", str(event.get("player_name") or "").strip().lower())
             side_key = str(event.get("team_side") or "").strip().lower()
             key = (str(event.get("event_type") or "").strip().lower(), minute_key, player_key, side_key)
@@ -411,6 +438,61 @@ class MatchParser:
             seen.add(key)
             deduped.append(event)
         return deduped
+
+    @staticmethod
+    def _is_goal_block(block: str) -> bool:
+        lowered = block.lower()
+        return ('alt="gol"' in lowered) or ("accion1" in lowered)
+
+    @staticmethod
+    def _extract_goal_side_from_block(block: str) -> str | None:
+        classes = re.search(r'class="([^"]+)"', block, flags=re.IGNORECASE)
+        if not classes:
+            return None
+        value = classes.group(1).lower()
+        if "left" in value or "local" in value:
+            return "home"
+        if "right" in value or "visitor" in value:
+            return "away"
+        return None
+
+    @staticmethod
+    def _extract_goal_minute_from_block(block: str) -> str:
+        raw = MatchParser._clean_html_text(block)
+        m = re.search(r"\b(\d{1,3})(?:\s*\+\s*(\d{1,2}))?\b", raw)
+        if not m:
+            return ""
+        if m.group(2):
+            return f"{m.group(1)}+{m.group(2)}"
+        return m.group(1)
+
+    @staticmethod
+    def _normalize_minute_raw(value: str) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip("'")
+
+    def _extract_goal_player_from_block(self, block: str) -> str | None:
+        anchors = re.findall(r"<a\b[^>]*data-cy=\"event\"[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
+        if not anchors:
+            anchors = re.findall(r"<a\b[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
+        for anchor in anchors:
+            text = self._clean_player_name(anchor)
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in {"sustituciones", "substitutions"}:
+                continue
+            if re.fullmatch(r"\+\d{1,2}", text):
+                continue
+            return text
+        return None
+
+    def _extract_assist_player_from_block(self, block: str) -> str | None:
+        anchors = re.findall(r"<a\b[^>]*class=\"[^\"]*color-grey2[^\"]*\"[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
+        for anchor in anchors:
+            text = self._clean_player_name(anchor)
+            if text:
+                return text
+        return None
 
     @staticmethod
     def _normalize_minute_key(minute: Any, added_time: Any, minute_raw: Any) -> str:
