@@ -233,7 +233,7 @@ class MatchParser:
 
     def _extract_stats_from_html(self, html: str) -> dict[str, Any]:
         module_match = re.search(
-            r'<(?:section|div)[^>]+id="mod_stats"[^>]*>(?P<body>.*?)</(?:section|div)>',
+            r"<(?:section|div)[^>]+id=['\"]mod_stats['\"][^>]*>(?P<body>.*?)</(?:section|div)>",
             html,
             flags=re.IGNORECASE | re.DOTALL,
         )
@@ -242,11 +242,15 @@ class MatchParser:
 
         body = module_match.group("body")
         rows = re.findall(r"<tr\b[^>]*>(?P<row>.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL)
+        if not rows:
+            rows = re.findall(r"<div\b[^>]*class=['\"][^'\"]*(?:stat|row|item)[^'\"]*['\"][^>]*>(?P<row>.*?)</div>", body, flags=re.IGNORECASE | re.DOTALL)
         fallback_stats: dict[str, Any] = {}
         partial_stats: dict[str, Any] = {}
 
         for raw_row in rows:
             cells = re.findall(r"<t[dh]\b[^>]*>(?P<cell>.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
+            if not cells:
+                cells = re.findall(r"<(?:span|div)\b[^>]*>(?P<cell>.*?)</(?:span|div)>", raw_row, flags=re.IGNORECASE | re.DOTALL)
             cleaned_cells = [self._clean_html_text(cell) for cell in cells]
             cleaned_cells = [cell for cell in cleaned_cells if cell]
 
@@ -282,13 +286,13 @@ class MatchParser:
         return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        goals_section = re.search(r'<section[^>]+id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
+        goals_section = re.search(r"<section[^>]+id=['\"]events-goals['\"][^>]*>(?P<body>.*?)</section>", html, flags=re.IGNORECASE | re.DOTALL)
         events: list[dict[str, Any]] = []
 
         # Prioridad: usar solo #events-goals cuando exista.
         if goals_section:
             body = goals_section.group("body")
-            blocks = re.findall(r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?</div>)', body, flags=re.IGNORECASE | re.DOTALL)
+            blocks = re.findall(r"(<div[^>]*class=['\"][^'\"]*table-played-match[^'\"]*['\"][^>]*>.*?</div>)", body, flags=re.IGNORECASE | re.DOTALL)
             for block in blocks:
                 if not self._is_goal_block(block):
                     continue
@@ -442,11 +446,11 @@ class MatchParser:
     @staticmethod
     def _is_goal_block(block: str) -> bool:
         lowered = block.lower()
-        return ('alt="gol"' in lowered) or ("accion1" in lowered)
+        return ('alt="gol"' in lowered) or ("alt='gol'" in lowered) or ("accion1" in lowered) or ("event-1" in lowered)
 
     @staticmethod
     def _extract_goal_side_from_block(block: str) -> str | None:
-        classes = re.search(r'class="([^"]+)"', block, flags=re.IGNORECASE)
+        classes = re.search(r"class=['\"]([^'\"]+)['\"]", block, flags=re.IGNORECASE)
         if not classes:
             return None
         value = classes.group(1).lower()
@@ -471,10 +475,12 @@ class MatchParser:
         return re.sub(r"\s+", "", str(value or "")).strip("'")
 
     def _extract_goal_player_from_block(self, block: str) -> str | None:
-        anchors = re.findall(r"<a\b[^>]*data-cy=\"event\"[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
+        anchors = re.findall(r"<a\b[^>]*data-cy=['\"]event['\"][^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
         if not anchors:
             anchors = re.findall(r"<a\b[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
         for anchor in anchors:
+            if re.search(r"class=['\"][^'\"]*color-grey2[^'\"]*['\"]", anchor, flags=re.IGNORECASE):
+                continue
             text = self._clean_player_name(anchor)
             if not text:
                 continue
@@ -487,7 +493,7 @@ class MatchParser:
         return None
 
     def _extract_assist_player_from_block(self, block: str) -> str | None:
-        anchors = re.findall(r"<a\b[^>]*class=\"[^\"]*color-grey2[^\"]*\"[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
+        anchors = re.findall(r"<a\b[^>]*class=['\"][^'\"]*color-grey2[^'\"]*['\"][^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
         for anchor in anchors:
             text = self._clean_player_name(anchor)
             if text:
