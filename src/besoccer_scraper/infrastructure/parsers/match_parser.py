@@ -233,23 +233,20 @@ class MatchParser:
 
     def _extract_stats_from_html(self, html: str) -> dict[str, Any]:
         module_match = re.search(
-            r'<(?:section|div)[^>]+id="mod_stats"[^>]*>(?P<body>.*?)</(?:section|div)>',
+            r"""<(?:section|div)[^>]+id=["']mod_stats["'][^>]*>(?P<body>.*?)</(?:section|div)>""",
             html,
             flags=re.IGNORECASE | re.DOTALL,
         )
         if not module_match:
             return {}
-
         body = module_match.group("body")
-        rows = re.findall(r"<tr\b[^>]*>(?P<row>.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL)
         fallback_stats: dict[str, Any] = {}
         partial_stats: dict[str, Any] = {}
 
-        for raw_row in rows:
+        for raw_row in re.findall(r"<tr\b[^>]*>(?P<row>.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL):
             cells = re.findall(r"<t[dh]\b[^>]*>(?P<cell>.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
             cleaned_cells = [self._clean_html_text(cell) for cell in cells]
             cleaned_cells = [cell for cell in cleaned_cells if cell]
-
             if len(cleaned_cells) < 3:
                 continue
 
@@ -270,6 +267,30 @@ class MatchParser:
             else:
                 partial_stats[normalized_key] = pair_payload
 
+        # Tolerant fallback for non-table structures (div-based stats).
+        module_text = self._clean_html_text(body)
+        if module_text:
+            label_aliases: dict[str, tuple[str, ...]] = {
+                "possession": ("Posesión", "Posesion"),
+                "shots_total": ("Remates",),
+                "shots_on_target": ("Remates a puerta",),
+                "corners": ("Saques de esquina", "Corners"),
+                "fouls": ("Faltas",),
+                "yellow_cards": ("Tarjetas",),
+            }
+            for stat_key, labels in label_aliases.items():
+                if stat_key in fallback_stats:
+                    continue
+                for label in labels:
+                    pattern = re.compile(
+                        rf"(?P<home>\d+%?)\s*{re.escape(label)}\s*(?P<away>\d+%?)",
+                        flags=re.IGNORECASE,
+                    )
+                    match = pattern.search(module_text)
+                    if match:
+                        fallback_stats[stat_key] = {"home": match.group("home"), "away": match.group("away")}
+                        break
+
         if partial_stats:
             fallback_stats["stats_json"] = partial_stats
         return fallback_stats
@@ -282,20 +303,45 @@ class MatchParser:
         return text.strip()
 
     def _extract_events(self, payload: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        goals_section = re.search(r'<section[^>]+id="events-goals"[^>]*>(?P<body>.*?)</section>', html, flags=re.IGNORECASE | re.DOTALL)
+        goals_section = re.search(r"""<section[^>]+id=["']events-goals["'][^>]*>(?P<body>.*?)</section>""", html, flags=re.IGNORECASE | re.DOTALL)
         events: list[dict[str, Any]] = []
 
         # Prioridad: usar solo #events-goals cuando exista.
         if goals_section:
             body = goals_section.group("body")
-            blocks = re.findall(r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?</div>)', body, flags=re.IGNORECASE | re.DOTALL)
-            for block in blocks:
-                if not self._is_goal_block(block):
-                    continue
-                minute_text = self._extract_goal_minute_from_block(block)
-                minute_raw = self._normalize_minute_raw(minute_text)
-                player_name = self._extract_goal_player_from_block(block)
-                if not player_name:
+            rows = re.findall(r'(<div[^>]*class="[^"]*table-played-match[^"]*"[^>]*>.*?</div>)', body, flags=re.IGNORECASE | re.DOTALL)
+            if rows:
+                for row in rows:
+                    if not self._is_goal_row(row):
+                        continue
+                    minute_text = self._extract_goal_minute_from_block(row)
+                    minute_raw = self._normalize_minute_raw(minute_text)
+                    player_name = self._extract_goal_player_from_row(row, body=body)
+                    if not player_name:
+                        continue
+                    parsed = self._build_goal_event(
+                        {
+                            "type": "goal",
+                            "minute": minute_raw,
+                            "text": f"{minute_raw} {player_name} goal".strip(),
+                            "player": player_name,
+                            "side": self._extract_goal_side_from_row(row),
+                        }
+                    )
+                    if parsed is not None:
+                        parsed["assist_player_name"] = self._extract_assist_player_from_row(row)
+                        events.append(parsed)
+                return self._dedupe_goal_events(events)
+
+            # Fallback textual para HTML mínimo (cuando existe #events-goals pero sin rows estructurados).
+            for match in re.finditer(
+                r"(?P<minute>\d{1,3}(?:\+\d+)?)['’]?\s+(?P<player>.+?)\s+goal\b",
+                self._clean_html_text(body),
+                flags=re.IGNORECASE,
+            ):
+                minute_raw = self._normalize_minute_raw(match.group("minute"))
+                player_name = self._clean_player_name(match.group("player"))
+                if not self._is_valid_goal_player_name(player_name):
                     continue
                 parsed = self._build_goal_event(
                     {
@@ -303,17 +349,9 @@ class MatchParser:
                         "minute": minute_raw,
                         "text": f"{minute_raw} {player_name} goal".strip(),
                         "player": player_name,
-                        "side": self._extract_goal_side_from_block(block),
+                        "side": "unknown",
                     }
                 )
-                if parsed is not None:
-                    parsed["assist_player_name"] = self._extract_assist_player_from_block(block)
-                    events.append(parsed)
-            if events:
-                return self._dedupe_goal_events(events)
-            chunks = re.findall(r"(\d{1,3}(?:\+\d+)?'[^']*?)(?=\d{1,3}(?:\+\d+)?'|$)", body, flags=re.IGNORECASE)
-            for line in chunks:
-                parsed = self._build_goal_event({"type": "goal", "text": line.strip(), "html": line.strip()})
                 if parsed is not None:
                     events.append(parsed)
             return self._dedupe_goal_events(events)
@@ -440,13 +478,13 @@ class MatchParser:
         return deduped
 
     @staticmethod
-    def _is_goal_block(block: str) -> bool:
-        lowered = block.lower()
-        return ('alt="gol"' in lowered) or ("accion1" in lowered)
+    def _is_goal_row(row: str) -> bool:
+        lowered = row.lower()
+        return ('alt="gol"' in lowered) or ("accion1" in lowered) or ('event-1' in lowered)
 
     @staticmethod
-    def _extract_goal_side_from_block(block: str) -> str | None:
-        classes = re.search(r'class="([^"]+)"', block, flags=re.IGNORECASE)
+    def _extract_goal_side_from_row(row: str) -> str | None:
+        classes = re.search(r'class="([^"]+)"', row, flags=re.IGNORECASE)
         if not classes:
             return None
         value = classes.group(1).lower()
@@ -470,25 +508,45 @@ class MatchParser:
     def _normalize_minute_raw(value: str) -> str:
         return re.sub(r"\s+", "", str(value or "")).strip("'")
 
-    def _extract_goal_player_from_block(self, block: str) -> str | None:
-        anchors = re.findall(r"<a\b[^>]*data-cy=\"event\"[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
-        if not anchors:
-            anchors = re.findall(r"<a\b[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
-        for anchor in anchors:
-            text = self._clean_player_name(anchor)
-            if not text:
+    def _extract_goal_player_from_row(self, row: str, *, body: str) -> str | None:
+        popup_link = re.search(r'href="(?P<ref>#popup_event[^"]+)"', row, flags=re.IGNORECASE)
+        if popup_link:
+            ref = re.escape(popup_link.group("ref").lstrip("#"))
+            popup_match = re.search(rf'<[^>]+id="{ref}"[^>]*>(?P<popup>.*?)</[^>]+>', body, flags=re.IGNORECASE | re.DOTALL)
+            if popup_match and 'event-1' in popup_match.group("popup").lower():
+                main = re.search(r'<a[^>]*class="[^"]*main-text[^"]*"[^>]*>(?P<n>.*?)</a>', popup_match.group("popup"), flags=re.IGNORECASE | re.DOTALL)
+                if main:
+                    text = self._clean_player_name(main.group("n"))
+                    if self._is_valid_goal_player_name(text):
+                        return text
+
+        anchors = re.findall(r'<a\b(?P<attrs>[^>]*)data-cy="event"(?P<attrs2>[^>]*)>(?P<label>.*?)</a>', row, flags=re.IGNORECASE | re.DOTALL)
+        for attrs, attrs2, label in anchors:
+            attrs_all = f"{attrs} {attrs2}".lower()
+            if "color-grey2" in attrs_all:
                 continue
-            lowered = text.lower()
-            if lowered in {"sustituciones", "substitutions"}:
-                continue
-            if re.fullmatch(r"\+\d{1,2}", text):
-                continue
-            return text
+            text = self._clean_player_name(label)
+            if self._is_valid_goal_player_name(text):
+                return text
         return None
 
-    def _extract_assist_player_from_block(self, block: str) -> str | None:
-        anchors = re.findall(r"<a\b[^>]*class=\"[^\"]*color-grey2[^\"]*\"[^>]*>(?P<label>.*?)</a>", block, flags=re.IGNORECASE | re.DOTALL)
-        for anchor in anchors:
+    @staticmethod
+    def _is_valid_goal_player_name(text: str | None) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if lowered in {"sustituciones", "substitutions"}:
+            return False
+        if text in {"+2"}:
+            return False
+        if "<" in text or "</" in text:
+            return False
+        if re.fullmatch(r"\+\d{1,2}", text):
+            return False
+        return True
+
+    def _extract_assist_player_from_row(self, row: str) -> str | None:
+        for anchor in re.findall(r'<a\b[^>]*class="[^"]*(?:color-grey2|event-22)[^"]*"[^>]*>(?P<label>.*?)</a>', row, flags=re.IGNORECASE | re.DOTALL):
             text = self._clean_player_name(anchor)
             if text:
                 return text
