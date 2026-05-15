@@ -84,3 +84,21 @@ def test_match_parser_added_time_minute_fields():
     assert ev["minute_raw"] == "45+2"
     assert ev["added_time"] == 2
     assert ev["half"] == "first_half"
+
+
+def test_match_parser_skips_empty_anchor_and_keeps_goal_player():
+    html = """
+    <section id="events-goals">
+      <div class="table-played-match right">
+        <span class="minute">35</span>
+        <img alt="Gol" src="g.png"/>
+        <a data-cy="event" href="/jugador/empty"></a>
+        <a data-cy="event" href="/jugador/10">F. Almada</a>
+        <a class="color-grey2" data-cy="event" href="/jugador/20">Iván González</a>
+      </div>
+    </section>
+    """
+    events = MatchParser()._extract_events({}, html)
+    assert len(events) == 1
+    assert events[0]["player_name"] == "F. Almada"
+    assert events[0]["assist_player_name"] == "Iván González"

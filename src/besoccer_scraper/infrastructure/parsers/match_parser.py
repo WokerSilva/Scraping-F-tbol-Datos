@@ -441,9 +441,10 @@ class MatchParser:
         return None
 
     def _extract_assist_player_from_soup_row(self, row: Any) -> str | None:
-        a = row.select_one('a.color-grey2, .event-22 a')
-        if a:
-            return self._clean_player_name(a.get_text(" ", strip=True))
+        for a in row.select('a.color-grey2, .event-22 a'):
+            name = self._clean_player_name(a.get_text(" ", strip=True))
+            if self._is_valid_goal_player_name(name):
+                return name
         names: list[str] = []
         for item in row.select('a[data-cy="event"]'):
             name = self._clean_player_name(item.get_text(" ", strip=True))
@@ -555,8 +556,9 @@ class MatchParser:
         for event in events:
             minute_key = str(event.get("minute_raw") or self._normalize_minute_key(event.get("minute"), event.get("added_time"), event.get("minute_raw")))
             player_key = re.sub(r"\s+", " ", str(event.get("player_name") or "").strip().lower())
+            assist_key = re.sub(r"\s+", " ", str(event.get("assist_player_name") or "").strip().lower())
             side_key = str(event.get("team_side") or "").strip().lower()
-            key = (str(event.get("event_type") or "").strip().lower(), minute_key, player_key, side_key)
+            key = (str(event.get("event_type") or "").strip().lower(), minute_key, player_key, assist_key, side_key)
             if key in seen:
                 continue
             seen.add(key)
@@ -650,7 +652,38 @@ class MatchParser:
 
     def _extract_goal_players(self, row: Any, soup: Any = None) -> tuple[str | None, str | None]:
         if hasattr(row, "select_one"):
-            return self._extract_goal_player_from_soup_row(row, soup), self._extract_assist_player_from_soup_row(row)
+            player_name = self._extract_goal_player_from_soup_row(row, soup)
+            assist_player_name = self._extract_assist_player_from_soup_row(row)
+
+            # Fallback explícito: anchors visibles en orden, ignorando vacíos y etiquetas no-jugador.
+            if not player_name:
+                for a in row.select('a[data-cy="event"]'):
+                    attrs = " ".join(a.get("class", []))
+                    text = self._clean_player_name(a.get_text(" ", strip=True))
+                    if not self._is_valid_goal_player_name(text):
+                        continue
+                    if "color-grey2" in attrs:
+                        if not assist_player_name:
+                            assist_player_name = text
+                        continue
+                    player_name = text
+                    break
+            if not assist_player_name:
+                seen_primary = False
+                for a in row.select('a[data-cy="event"]'):
+                    attrs = " ".join(a.get("class", []))
+                    text = self._clean_player_name(a.get_text(" ", strip=True))
+                    if not self._is_valid_goal_player_name(text):
+                        continue
+                    if "color-grey2" in attrs:
+                        assist_player_name = text
+                        break
+                    if seen_primary:
+                        assist_player_name = text
+                        break
+                    if player_name and text == player_name:
+                        seen_primary = True
+            return player_name, assist_player_name
         row_text = str(row)
         return self._extract_goal_player_from_row(row_text, body=row_text), self._extract_assist_player_from_row(row_text)
 
@@ -659,7 +692,7 @@ class MatchParser:
         if not text:
             return False
         lowered = text.lower()
-        if lowered in {"sustituciones", "substitutions"}:
+        if lowered in {"sustituciones", "substitutions", "gol", "asistencia"}:
             return False
         if text in {"+2"}:
             return False
