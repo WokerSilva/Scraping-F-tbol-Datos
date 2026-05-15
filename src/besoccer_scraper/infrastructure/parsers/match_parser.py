@@ -572,10 +572,12 @@ class MatchParser:
     def _is_goal_row(row: Any) -> bool:
         if hasattr(row, "select_one"):
             text = row.get_text(" ", strip=True).lower()
+            row_classes = " ".join(row.get("class", [])) if hasattr(row, "get") else ""
             return bool(
                 row.select_one('img[alt="Gol"]')
                 or row.select_one('img[src*="accion1"]')
                 or row.select_one(".event-1")
+                or ("accion1" in row_classes.lower())
                 or ("goal" in text)
             )
         lowered = str(row).lower()
