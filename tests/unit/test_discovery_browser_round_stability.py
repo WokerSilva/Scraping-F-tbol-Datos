@@ -337,3 +337,50 @@ def test_persist_complete_inserts_153_pending_targets(capsys):
     assert all(c["payload"]["status"] == "pending" for c in calls)
     assert "persist_requested=true" in out
     assert "persist_applied=true" in out
+
+
+def test_multipass_same_round_same_ids_is_stable(capsys):
+    class _Browser:
+        def __init__(self):
+            self._calls = 0
+
+        def discover_rounds(self, **kwargs):
+            self._calls += 1
+            return [{"requested_round": "JORNADA1", "matches": [{"source_match_id": "a1", "url": "/partido/a/b/a1"}]}]
+
+    uc = DiscoverMxSeasonUseCase(_Team(), _Parser(), _Http(), _Browser(), True, browser_max_passes=2, expected_per_round={"clausura_mexico": 1}, expected_rounds={"clausura_mexico": 1}, expected_matches={"clausura_mexico": 1})
+    rows = uc.execute(competition_slug="clausura_mexico", year=2026, dry_run=True, persist=False, browser=True, fallback_to_teams=False)
+    out = capsys.readouterr().out
+    assert len(rows) == 1
+    assert "unstable_rounds=[]" in out
+
+
+def test_same_match_id_different_round_is_unstable(capsys):
+    class _Browser:
+        def discover_rounds(self, **kwargs):
+            return [
+                {"requested_round": "JORNADA1", "matches": [{"source_match_id": "a1", "url": "/partido/a/b/a1"}]},
+                {"requested_round": "JORNADA2", "matches": [{"source_match_id": "a1", "url": "/partido/a/b/a1"}]},
+            ]
+
+    uc = DiscoverMxSeasonUseCase(_Team(), _Parser(), _Http(), _Browser(), True, expected_per_round={"clausura_mexico": 1}, expected_rounds={"clausura_mexico": 2}, expected_matches={"clausura_mexico": 2})
+    rows = uc.execute(competition_slug="clausura_mexico", year=2026, dry_run=True, persist=False, browser=True, fallback_to_teams=False)
+    out = capsys.readouterr().out
+    assert len(rows) == 1
+    assert "unstable_rounds=['JORNADA2']" in out
+
+
+def test_legacy_browser_tuple_result_is_accepted():
+    class _Browser:
+        def render_round_pages(self, **kwargs):
+            return [("JORNADA1", "legacy-html")]
+
+    class _Parser2:
+        def parse(self, html):
+            assert html == "legacy-html"
+            return {"matches": [{"source_match_id": "legacy1", "url": "/partido/a/b/legacy1", "competition_name": "Liga MX - Clausura"}]}
+
+    uc = DiscoverMxSeasonUseCase(_Team(), _Parser2(), _Http(), _Browser(), True, expected_per_round={"clausura_mexico": 1}, expected_rounds={"clausura_mexico": 1}, expected_matches={"clausura_mexico": 1})
+    rows = uc.execute(competition_slug="clausura_mexico", year=2026, dry_run=True, persist=False, browser=True, fallback_to_teams=False)
+    assert len(rows) == 1
+    assert rows[0]["round_label"] == "JORNADA1"
