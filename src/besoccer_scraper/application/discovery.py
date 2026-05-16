@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 
-from besoccer_scraper.config.league_catalog import get_league_config
+from besoccer_scraper.config.league_catalog import get_coverage_expectations, get_league_config
 from besoccer_scraper.domain.policies import RequestPolicy
 from besoccer_scraper.domain.repositories import UnitOfWork
 from besoccer_scraper.domain.services import build_season_key
@@ -42,7 +42,8 @@ class DiscoverMxTeamUseCase:
         missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
         if not missing_rounds_queue:
             return discovered
-        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
+        expected_per_round = max(1, self._expected_per_round_for(competition_slug))
+        max_repairs = len(missing_rounds_queue) * expected_per_round
         repairs_applied = 0
         for match in parsed:
             source_match_id = str(match.payload.get("source_match_id") or match.external_id)
@@ -96,12 +97,38 @@ class DiscoverMxSeasonUseCase:
     browser_renderer: object | None = None
     use_browser_fallback: bool = False
     expected_rounds: dict[str, int] = None  # type: ignore[assignment]
+    expected_per_round: dict[str, int] = None  # type: ignore[assignment]
+    expected_matches: dict[str, int] = None  # type: ignore[assignment]
     browser_max_passes: int = 3
     liga_mx_matches_per_round: int = 9
 
     def __post_init__(self) -> None:
         if self.expected_rounds is None:
-            self.expected_rounds = {"clausura_mexico": 17, "apertura_mexico": 17}
+            self.expected_rounds = {}
+        if self.expected_per_round is None:
+            self.expected_per_round = {}
+        if self.expected_matches is None:
+            self.expected_matches = {}
+
+
+    def _coverage_config(self, competition_slug: str) -> dict[str, int]:
+        catalog = get_coverage_expectations(competition_slug)
+        return {
+            "expected_rounds": self.expected_rounds.get(competition_slug, catalog["expected_rounds"]),
+            "expected_per_round": self.expected_per_round.get(competition_slug, catalog["expected_per_round"]),
+            "expected_matches": self.expected_matches.get(competition_slug, catalog["expected_matches"]),
+        }
+
+    def _expected_rounds_for(self, competition_slug: str, fallback: int = 0) -> int:
+        value = self._coverage_config(competition_slug)["expected_rounds"]
+        return value if value > 0 else fallback
+
+    def _expected_per_round_for(self, competition_slug: str) -> int:
+        return self._coverage_config(competition_slug)["expected_per_round"]
+
+    def _expected_matches_for(self, competition_slug: str, fallback: int = 0) -> int:
+        value = self._coverage_config(competition_slug)["expected_matches"]
+        return value if value > 0 else fallback
 
     def execute(self, *, competition_slug: str, year: int, max_teams: int | None = None, dry_run: bool = True, persist: bool = False, print_urls: bool = False, browser: bool | None = None, fallback_to_teams: bool = True, debug: bool = False, sample_size: int = 3, allow_partial: bool = False, require_complete: bool = False) -> list[dict[str, str]]:
         season_key = build_season_key(competition_slug, year)
@@ -136,7 +163,7 @@ class DiscoverMxSeasonUseCase:
                     print(url)
 
         rounds_detected = result.rounds_detected
-        rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
+        rounds_expected = self._expected_rounds_for(competition_slug, rounds_detected)
         missing_rounds = result.missing_rounds
         expected_matches = result.expected_matches
         coverage_status = result.coverage_status
@@ -223,15 +250,15 @@ class DiscoverMxSeasonUseCase:
         unstable_rounds: list[str],
     ) -> DiscoveryResult:
         rows = list(discovered.values())
-        rounds_expected = self.expected_rounds.get(competition_slug, len(rows))
+        rounds_expected = self._expected_rounds_for(competition_slug, len(rows))
         targets_by_round: dict[str, list[dict[str, str]]] = {}
         for row in rows:
             normalized_round = self._normalize_round_label(str(row.get("round_label", "")))
             targets_by_round.setdefault(normalized_round, []).append(row)
 
         missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in targets_by_round]
-        expected_matches = 153 if competition_slug in {"clausura_mexico", "apertura_mexico"} else len(rows)
-        matches_per_round_expected = self.liga_mx_matches_per_round if competition_slug in {"clausura_mexico", "apertura_mexico"} else 0
+        expected_matches = self._expected_matches_for(competition_slug, len(rows))
+        matches_per_round_expected = self._expected_per_round_for(competition_slug)
         rounds_have_expected_size = all(
             len(targets_by_round.get(f"JORNADA{i}", [])) == matches_per_round_expected
             for i in range(1, rounds_expected + 1)
@@ -343,7 +370,8 @@ class DiscoverMxSeasonUseCase:
         consolidated_rounds: dict[str, list[dict[str, str]]] = {}
         for pass_rounds in per_pass_rounds:
             for round_label, matches in pass_rounds.items():
-                is_valid = len(matches) == self.liga_mx_matches_per_round if competition_slug in {"clausura_mexico", "apertura_mexico"} else bool(matches)
+                expected_per_round = self._expected_per_round_for(competition_slug)
+                is_valid = len(matches) == expected_per_round if expected_per_round > 0 else bool(matches)
                 if not is_valid:
                     unstable_rounds_all.add(round_label)
                     continue
@@ -441,7 +469,7 @@ class DiscoverMxSeasonUseCase:
         return f"JORNADA{int(match.group(1))}"
 
     def _detect_missing_rounds(self, *, competition_slug: str, discovered: dict[str, dict[str, str]]) -> list[str]:
-        rounds_expected = self.expected_rounds.get(competition_slug, 0)
+        rounds_expected = self._expected_rounds_for(competition_slug, 0)
         if rounds_expected <= 0:
             return []
         detected_rounds = {
@@ -460,7 +488,8 @@ class DiscoverMxSeasonUseCase:
         missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
         if not missing_rounds_queue:
             return discovered
-        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
+        expected_per_round = max(1, self._expected_per_round_for(competition_slug))
+        max_repairs = len(missing_rounds_queue) * expected_per_round
         repairs_applied = 0
         for team_slug in team_slugs:
             rows = self.team_use_case.execute(competition_slug=competition_slug, year=year, team_slug=str(team_slug), dry_run=True, persist=False)
@@ -470,7 +499,7 @@ class DiscoverMxSeasonUseCase:
                     continue
                 if repairs_applied >= max_repairs:
                     break
-                assigned_round = missing_rounds_queue[repairs_applied // self.liga_mx_matches_per_round]
+                assigned_round = missing_rounds_queue[repairs_applied // expected_per_round]
                 discovered[source_match_id] = {"source_match_id": source_match_id, "url": row["url"], "source_competition_slug": competition_slug, "season_key": season_key, "round_label": assigned_round, "strategy": "browser_dom_rounds+team_matches_filter_repair", "source_page": f"https://es.besoccer.com/equipo/partidos/{team_slug}/{year}"}
                 repairs_applied += 1
             if repairs_applied >= max_repairs:
