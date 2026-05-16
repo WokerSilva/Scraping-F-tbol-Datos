@@ -38,7 +38,7 @@ class DiscoverMxTeamUseCase:
         team_url = f"https://es.besoccer.com/equipo/partidos/{team_slug}/{year}"
         html = self.http_client.get(team_url)
         parsed = self.parser.parse(html, competition_slug)
-        discovered: dict[str, dict[str, str]] = dict(base_discovered)
+        discovered: dict[str, dict[str, str]] = {}
         missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
         if not missing_rounds_queue:
             return discovered
@@ -289,12 +289,7 @@ class DiscoverMxSeasonUseCase:
         )
 
     def _discover_by_rounds(self, *, competition_slug: str, season_key: str, competition_url: str) -> dict[str, dict[str, str]]:
-        discovered: dict[str, dict[str, str]] = dict(base_discovered)
-        missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
-        if not missing_rounds_queue:
-            return discovered
-        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
-        repairs_applied = 0
+        discovered: dict[str, dict[str, str]] = {}
         try:
             html = self.http_client.get(competition_url)
         except ScrapeBlockedError:
@@ -406,12 +401,7 @@ class DiscoverMxSeasonUseCase:
                 if round_label not in consolidated_rounds or len(matches) > len(consolidated_rounds[round_label]) or (existing_ids and current_ids and existing_ids == current_ids):
                     consolidated_rounds[round_label] = matches
 
-        discovered: dict[str, dict[str, str]] = dict(base_discovered)
-        missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
-        if not missing_rounds_queue:
-            return discovered
-        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
-        repairs_applied = 0
+        discovered: dict[str, dict[str, str]] = {}
         id_to_round: dict[str, str] = {}
         for round_label in sorted(consolidated_rounds.keys(), key=self._round_sort_key):
             for match in consolidated_rounds[round_label]:
