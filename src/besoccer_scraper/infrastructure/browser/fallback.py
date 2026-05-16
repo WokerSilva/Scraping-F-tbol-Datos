@@ -110,57 +110,105 @@ class BrowserCompetitionRenderer:
                 raise HttpFetchError(f"No se pudo extraer página de competición. La página renderizada no contiene selector de jornadas ni partidos. Debug: {debug}. Status: {response.status}. Final URL: {page.url}. Body length: {body_len}", url=url)
 
             options_meta = self._extract_round_options(page=page, selector=select_selector)
-            previous_ids: set[str] = set()
+            max_round_attempts = 3
+            round_state: dict[str, dict[str, Any]] = {}
+            round_order: list[str] = []
             for option in options_meta:
                 requested_round = str(option.get("normalized_label") or option.get("label") or "").strip()
                 if not requested_round:
                     continue
-                attempts = 0
-                dom: dict[str, Any] = {"matches": [], "diagnostics": {}}
-                status_reason = "unknown"
-                while attempts < 3:
-                    attempts += 1
-                    if attempts > 1:
-                        response = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                        if response is None:
-                            status_reason = "reload_failed"
-                            continue
-                        self._dismiss_cookies(page)
-                        select_selector = self._resolve_select_selector(page)
-                        if not select_selector:
-                            status_reason = "select_not_found_after_reload"
-                            continue
+                round_order.append(requested_round)
+                round_state[requested_round] = {
+                    "option": option,
+                    "attempts": 0,
+                    "status_reason": "pending",
+                    "matches": [],
+                    "diagnostics": {},
+                }
+
+            pending_rounds = set(round_order)
+            for _ in range(max_round_attempts):
+                if not pending_rounds:
+                    break
+                ids_to_rounds: dict[str, set[str]] = {}
+                retry_candidates: set[str] = set()
+                for requested_round in round_order:
+                    if requested_round not in pending_rounds:
+                        continue
+                    state = round_state[requested_round]
+                    option = state["option"]
+                    state["attempts"] = int(state.get("attempts", 0)) + 1
+                    status_reason = "unknown"
+                    dom: dict[str, Any] = {"matches": [], "diagnostics": {}}
+
+                    response = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    if response is None:
+                        status_reason = "reload_failed"
+                        state.update({"status_reason": status_reason, "matches": [], "diagnostics": {"requested_round": requested_round}})
+                        retry_candidates.add(requested_round)
+                        continue
+                    self._dismiss_cookies(page)
+                    select_selector = self._resolve_select_selector(page)
+                    if not select_selector:
+                        status_reason = "select_not_found_after_reload"
+                        state.update({"status_reason": status_reason, "matches": [], "diagnostics": {"requested_round": requested_round}})
+                        retry_candidates.add(requested_round)
+                        continue
+
+                    snapshot_before = self._capture_round_snapshot(page=page)
                     self._select_round(page=page, selector=select_selector, value=str(option.get("value", "")), label=str(option.get("label", "")), index=int(option.get("index", 0)))
-                    self._wait_for_dom_change(page=page, previous_ids=previous_ids)
+                    self._wait_for_dom_change(page=page, previous_ids=snapshot_before["ids"])
                     dom = self._extract_round_dom(page=page)
                     current_ids = {str(item.get("source_match_id", "")).strip() for item in dom.get("matches", []) if str(item.get("source_match_id", "")).strip()}
-                    dom_diagnostics = dom.get("diagnostics", {})
+                    snapshot_after = self._capture_round_snapshot(page=page)
+                    dom_diagnostics = dict(dom.get("diagnostics", {}))
+                    normalized_selected = self._normalize_round_label(str(dom_diagnostics.get("selected_round_after_action", "")))
                     dom_diagnostics["requested_round"] = requested_round
-                    dom_diagnostics["previous_round_ids"] = sorted(previous_ids)
-                    dom_diagnostics["changed_from_previous"] = bool(current_ids and current_ids != previous_ids)
-                    dom_diagnostics["match_anchor_count"] = len(current_ids)
-                    if not current_ids:
-                        status_reason = "empty_ids"
-                        continue
-                    if previous_ids and current_ids == previous_ids:
-                        status_reason = "same_as_previous_round"
-                        continue
-                    normalized_selected = self._normalize_round_label(str(dom.get("diagnostics", {}).get("selected_round_after_action", "")))
+                    dom_diagnostics["snapshot_before"] = snapshot_before
+                    dom_diagnostics["snapshot_after"] = snapshot_after
+                    dom_diagnostics["changed_from_snapshot"] = bool(snapshot_before["signature"] != snapshot_after["signature"])
+
                     if normalized_selected != requested_round:
-                        status_reason = f"selected_round_mismatch:{normalized_selected}"
+                        status_reason = "requested_round_mismatch"
+                    elif not current_ids:
+                        status_reason = "empty_ids"
+                    elif not dom_diagnostics["changed_from_snapshot"]:
+                        status_reason = "dom_not_changed_after_round_selection"
+                    else:
+                        status_reason = "ok"
+                        for match_id in current_ids:
+                            ids_to_rounds.setdefault(match_id, set()).add(requested_round)
+
+                    state.update({"status_reason": status_reason, "matches": dom.get("matches", []), "diagnostics": dom_diagnostics})
+                    if status_reason != "ok":
+                        retry_candidates.add(requested_round)
+
+                unstable_rounds: set[str] = set()
+                for match_id, assigned_rounds in ids_to_rounds.items():
+                    if len(assigned_rounds) <= 1:
                         continue
-                    status_reason = "ok"
-                    if current_ids:
-                        previous_ids = current_ids
-                        break
+                    for round_label in assigned_rounds:
+                        unstable_rounds.add(round_label)
+                        round_state[round_label]["status_reason"] = "cross_round_duplicate_ids"
+                        diagnostics = dict(round_state[round_label].get("diagnostics", {}))
+                        collisions = diagnostics.setdefault("collision_ids", {})
+                        collisions[match_id] = sorted(assigned_rounds)
+                        diagnostics["unstable"] = True
+                        round_state[round_label]["diagnostics"] = diagnostics
+                retry_candidates |= unstable_rounds
+                pending_rounds = {round_label for round_label in retry_candidates if int(round_state[round_label].get("attempts", 0)) < max_round_attempts}
+
+            for requested_round in round_order:
+                state = round_state[requested_round]
+                status_reason = str(state.get("status_reason", "unknown"))
                 if requested_round == "JORNADA17" and status_reason != "ok":
-                    self._save_round_failure_debug(page=page, competition=competition, year=year, requested_round=requested_round, status_reason=status_reason, diagnostics=dom.get("diagnostics", {}))
+                    self._save_round_failure_debug(page=page, competition=competition, year=year, requested_round=requested_round, status_reason=status_reason, diagnostics=state.get("diagnostics", {}))
                 round_results.append(
                     {
                         "round_label": requested_round,
                         "requested_round": requested_round,
-                        "matches": dom.get("matches", []),
-                        "diagnostics": {**dom.get("diagnostics", {}), "attempts": attempts, "status_reason": status_reason},
+                        "matches": state.get("matches", []),
+                        "diagnostics": {**dict(state.get("diagnostics", {})), "attempts": state.get("attempts", 0), "status_reason": status_reason},
                     }
                 )
 
@@ -403,6 +451,24 @@ class BrowserCompetitionRenderer:
             )
         except Exception:
             pass
+
+    def _capture_round_snapshot(self, *, page: object) -> dict[str, Any]:
+        return page.evaluate(
+            """() => {
+                const scope = document.querySelector('#mod_mainCompetitionRounds') || document.querySelector('.comp-matches') || document.querySelector('.panel-body.match-list-new') || document.querySelector('main');
+                const anchors = scope ? Array.from(scope.querySelectorAll('a[href*="/partido/"]')) : [];
+                const ids = anchors
+                    .map((a) => (a.getAttribute('href') || '').split('/').filter(Boolean).pop() || '')
+                    .filter(Boolean);
+                const uniqueSorted = Array.from(new Set(ids)).sort();
+                return {
+                    ids: uniqueSorted,
+                    count: uniqueSorted.length,
+                    html_length: scope ? String(scope.innerHTML || '').length : 0,
+                    signature: `${uniqueSorted.join('|')}::${scope ? String(scope.innerHTML || '').length : 0}`,
+                };
+            }"""
+        )
 
     def _save_round_failure_debug(self, *, page: object, competition: str | None, year: int | None, requested_round: str, status_reason: str, diagnostics: dict[str, Any]) -> None:
         base = Path("data/snapshots/errors")
