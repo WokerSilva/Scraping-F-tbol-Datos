@@ -86,3 +86,33 @@ def test_existing_target_not_change_round_label():
     uc = DiscoverMxSeasonUseCase(team, _Parser(), _Http(), _Browser(), True)
     uc.execute(competition_slug="clausura_mexico", year=2026, dry_run=False, persist=True, browser=True, fallback_to_teams=False, allow_partial=True)
     assert team.uow.scrape_targets.calls[0]["payload"]["round_label"] == "JORNADA4"
+
+
+def test_discovery_reports_missing_jornada17_when_absent(capsys):
+    class _Browser:
+        def discover_rounds(self, **kwargs):
+            return _browser_payload(16, 9)
+    uc = DiscoverMxSeasonUseCase(_Team(), _Parser(), _Http(), _Browser(), True)
+    uc.execute(competition_slug="clausura_mexico", year=2026, dry_run=True, persist=False, browser=True, fallback_to_teams=False)
+    out = capsys.readouterr().out
+    assert "missing_rounds=['JORNADA17']" in out
+
+
+def test_discovery_jornada17_after_retry_counts_complete(capsys):
+    class _Browser:
+        def discover_rounds(self, **kwargs):
+            data = _browser_payload(16, 9)
+            data.append(
+                {
+                    "round_label": "Jornada 17",
+                    "requested_round": "JORNADA17",
+                    "diagnostics": {"status_reason": "ok", "attempts": 2},
+                    "matches": [{"source_match_id": f"17{i:02d}", "url": f"/partido/a/b/17{i:02d}"} for i in range(1, 10)],
+                }
+            )
+            return data
+    uc = DiscoverMxSeasonUseCase(_Team(), _Parser(), _Http(), _Browser(), True)
+    uc.execute(competition_slug="clausura_mexico", year=2026, dry_run=True, persist=False, browser=True, fallback_to_teams=False)
+    out = capsys.readouterr().out
+    assert "JORNADA17 count=9" in out
+    assert "coverage_status=complete" in out

@@ -105,7 +105,7 @@ class DiscoverMxSeasonUseCase:
         print(f"season_key={season_key}")
         print("strategy=browser_dom_rounds")
         print(f"rounds_expected={rounds_expected}")
-        print(f"rounds_attempted={rounds_expected}")
+        print(f"rounds_attempted={self._last_rounds_attempted if hasattr(self, '_last_rounds_attempted') else rounds_expected}")
         print(f"rounds_detected={rounds_detected}")
         print(f"missing_rounds={missing_rounds}")
         print(f"targets_found={len(rows)}")
@@ -122,7 +122,7 @@ class DiscoverMxSeasonUseCase:
         print(f"targets_by_round={{{', '.join(f'{k}:{len(v)}' for k, v in sorted(grouped_ids.items(), key=lambda x: self._round_sort_key(x[0])))}}}")
         print(f"sample_ids_by_round={{{', '.join(f'{k}:{v[:sample_size]}' for k, v in sorted(grouped_ids.items(), key=lambda x: self._round_sort_key(x[0])))}}}")
         print(f"duplicate_source_match_ids={duplicate_ids}")
-        print(f"unstable_rounds=[]")
+        print(f"unstable_rounds={getattr(self, '_last_unstable_rounds', [])}")
         if debug and not rows:
             debug_path = Path("data/snapshots/errors") / f"mx_season_{competition_slug}_{year}_summary.json"
             if debug_path.exists():
@@ -198,10 +198,15 @@ class DiscoverMxSeasonUseCase:
         else:
             rendered = [{"round_label": label, "matches": [], "html": html} for label, html in self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year)]
         parser_matches_by_round: dict[str, int] = {}
+        unstable_rounds: list[str] = []
         rounds_attempted = 0
         for round_result in rendered:
             rounds_attempted += 1
             round_label = str(round_result.get("requested_round") or round_result.get("round_label", ""))
+            diagnostics = round_result.get("diagnostics", {}) if isinstance(round_result, dict) else {}
+            if isinstance(diagnostics, dict) and diagnostics.get("status_reason") not in (None, "ok"):
+                unstable_rounds.append(self._normalize_round_label(round_label))
+                continue
             round_matches = list(round_result.get("matches", []))
             if not round_matches and round_result.get("html"):
                 page = self.competition_parser.parse(str(round_result.get("html")))
@@ -216,6 +221,8 @@ class DiscoverMxSeasonUseCase:
                 if competition_name and not self._is_competition_match(competition_slug, competition_name):
                     continue
                 discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(round_label), "strategy": "competition_rounds_browser", "source_page": competition_url}
+        self._last_rounds_attempted = rounds_attempted
+        self._last_unstable_rounds = sorted(set([r for r in unstable_rounds if r]), key=self._round_sort_key)
         if debug:
             base = Path("data/snapshots/errors")
             base.mkdir(parents=True, exist_ok=True)
