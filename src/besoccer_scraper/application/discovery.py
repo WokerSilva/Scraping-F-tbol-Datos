@@ -38,7 +38,12 @@ class DiscoverMxTeamUseCase:
         team_url = f"https://es.besoccer.com/equipo/partidos/{team_slug}/{year}"
         html = self.http_client.get(team_url)
         parsed = self.parser.parse(html, competition_slug)
-        discovered: dict[str, dict[str, str]] = {}
+        discovered: dict[str, dict[str, str]] = dict(base_discovered)
+        missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
+        if not missing_rounds_queue:
+            return discovered
+        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
+        repairs_applied = 0
         for match in parsed:
             source_match_id = str(match.payload.get("source_match_id") or match.external_id)
             relative_url = str(match.payload.get("relative_url", ""))
@@ -109,8 +114,9 @@ class DiscoverMxSeasonUseCase:
         discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year, debug=debug) if use_browser else self._discover_by_rounds(competition_slug=competition_slug, season_key=season_key, competition_url=competition_url)
         if not discovered and not use_browser and self.use_browser_fallback:
             discovered = self._discover_by_browser(competition_slug, season_key, competition_url, year, debug=debug)
-        if fallback_to_teams and self._should_fallback(discovered) and hasattr(self.team_use_case, "execute"):
-            discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams)
+        missing_rounds = self._detect_missing_rounds(competition_slug=competition_slug, discovered=discovered)
+        if fallback_to_teams and missing_rounds and hasattr(self.team_use_case, "execute"):
+            discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams, base_discovered=discovered, missing_rounds=missing_rounds)
 
         result = self._build_discovery_result(
             competition_slug=competition_slug,
@@ -256,7 +262,12 @@ class DiscoverMxSeasonUseCase:
         )
 
     def _discover_by_rounds(self, *, competition_slug: str, season_key: str, competition_url: str) -> dict[str, dict[str, str]]:
-        discovered: dict[str, dict[str, str]] = {}
+        discovered: dict[str, dict[str, str]] = dict(base_discovered)
+        missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
+        if not missing_rounds_queue:
+            return discovered
+        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
+        repairs_applied = 0
         try:
             html = self.http_client.get(competition_url)
         except ScrapeBlockedError:
@@ -339,7 +350,12 @@ class DiscoverMxSeasonUseCase:
                 if round_label not in consolidated_rounds or len(matches) > len(consolidated_rounds[round_label]):
                     consolidated_rounds[round_label] = matches
 
-        discovered: dict[str, dict[str, str]] = {}
+        discovered: dict[str, dict[str, str]] = dict(base_discovered)
+        missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
+        if not missing_rounds_queue:
+            return discovered
+        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
+        repairs_applied = 0
         id_to_round: dict[str, str] = {}
         for round_label in sorted(consolidated_rounds.keys(), key=self._round_sort_key):
             for match in consolidated_rounds[round_label]:
@@ -424,20 +440,56 @@ class DiscoverMxSeasonUseCase:
             return None
         return f"JORNADA{int(match.group(1))}"
 
-    def _should_fallback(self, discovered: dict[str, dict[str, str]]) -> bool:
-        return not discovered
+    def _detect_missing_rounds(self, *, competition_slug: str, discovered: dict[str, dict[str, str]]) -> list[str]:
+        rounds_expected = self.expected_rounds.get(competition_slug, 0)
+        if rounds_expected <= 0:
+            return []
+        detected_rounds = {
+            self._normalize_round_label(str(row.get("round_label", "")))
+            for row in discovered.values()
+            if str(row.get("round_label", "")).strip()
+        }
+        return [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds]
 
-    def _discover_by_teams(self, *, competition_slug: str, year: int, season_key: str, max_teams: int | None) -> dict[str, dict[str, str]]:
+    def _discover_by_teams(self, *, competition_slug: str, year: int, season_key: str, max_teams: int | None, base_discovered: dict[str, dict[str, str]], missing_rounds: list[str]) -> dict[str, dict[str, str]]:
         config = get_league_config(competition_slug)
         team_slugs = list(config.get("team_slugs", []))
         if max_teams is not None:
             team_slugs = team_slugs[:max_teams]
-        discovered: dict[str, dict[str, str]] = {}
+        discovered: dict[str, dict[str, str]] = dict(base_discovered)
+        missing_rounds_queue = list(sorted(set(missing_rounds), key=self._round_sort_key))
+        if not missing_rounds_queue:
+            return discovered
+        max_repairs = len(missing_rounds_queue) * self.liga_mx_matches_per_round
+        repairs_applied = 0
         for team_slug in team_slugs:
             rows = self.team_use_case.execute(competition_slug=competition_slug, year=year, team_slug=str(team_slug), dry_run=True, persist=False)
             for row in rows:
                 source_match_id = row["source_match_id"]
                 if source_match_id in discovered:
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": row["url"], "source_competition_slug": competition_slug, "season_key": season_key, "round_label": "team-fallback", "strategy": "team_matches_fallback", "source_page": f"https://es.besoccer.com/equipo/partidos/{team_slug}/{year}"}
-        return discovered
+                if repairs_applied >= max_repairs:
+                    break
+                assigned_round = missing_rounds_queue[repairs_applied // self.liga_mx_matches_per_round]
+                discovered[source_match_id] = {"source_match_id": source_match_id, "url": row["url"], "source_competition_slug": competition_slug, "season_key": season_key, "round_label": assigned_round, "strategy": "browser_dom_rounds+team_matches_filter_repair", "source_page": f"https://es.besoccer.com/equipo/partidos/{team_slug}/{year}"}
+                repairs_applied += 1
+            if repairs_applied >= max_repairs:
+                break
+
+        id_to_round: dict[str, str] = {}
+        filtered: dict[str, dict[str, str]] = {}
+        duplicate_source_match_ids: set[str] = set(getattr(self, "_last_duplicate_source_match_ids", []))
+        for row in discovered.values():
+            source_match_id = str(row.get("source_match_id", "")).strip()
+            round_label = self._normalize_round_label(str(row.get("round_label", "")))
+            if not source_match_id:
+                continue
+            previous_round = id_to_round.get(source_match_id)
+            if previous_round and previous_round != round_label:
+                duplicate_source_match_ids.add(source_match_id)
+                continue
+            id_to_round[source_match_id] = round_label
+            filtered[source_match_id] = row
+
+        self._last_duplicate_source_match_ids = sorted([i for i in duplicate_source_match_ids if i])
+        return filtered
