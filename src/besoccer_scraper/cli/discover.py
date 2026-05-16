@@ -20,14 +20,15 @@ def run_discover(container: object, args: object) -> int:
         return len(rows)
 
     if args.discover_mode == "mx-season":
-        dry_run = args.dry_run or not args.persist
+        persist_requested = bool(args.persist and not args.dry_run)
+        dry_run = not persist_requested
         try:
             rows = container.discover_mx_season_use_case.execute(
                 competition_slug=args.competition,
                 year=args.year,
                 max_teams=args.max_teams,
                 dry_run=dry_run,
-                persist=args.persist,
+                persist=persist_requested,
                 print_urls=args.print_urls,
                 browser=args.browser,
                 fallback_to_teams=(args.fallback_teams if args.fallback_teams is not None else (not dry_run)),
