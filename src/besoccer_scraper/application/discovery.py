@@ -143,7 +143,14 @@ class DiscoverMxSeasonUseCase:
         print(f"targets_found={len(rows)}")
         print(f"unique_match_ids={result.unique_match_ids}")
         print(f"coverage_status={coverage_status}")
-        print(f"persist={str(persist and not dry_run).lower()}")
+        persist_requested = persist and not dry_run
+        persist_applied = persist_requested and (
+            coverage_status == "complete" or (coverage_status != "complete" and allow_partial)
+        )
+        print(f"persist_requested={str(persist_requested).lower()}")
+        print(f"persist_applied={str(persist_applied).lower()}")
+        if persist_requested and coverage_status != "complete":
+            print("reason=coverage_partial")
         grouped_ids: dict[str, list[str]] = {
             round_label: [str(target["source_match_id"]) for target in targets]
             for round_label, targets in result.targets_by_round.items()
@@ -170,12 +177,11 @@ class DiscoverMxSeasonUseCase:
             raise RuntimeError(
                 f"Discovery incompleto para {competition_slug} {year}: rounds_detected={rounds_detected}/{rounds_expected} targets_found={len(rows)}/{expected_matches}"
             )
-        if persist and not dry_run and not result.persist_allowed:
+        if persist_requested and coverage_status != "complete" and not allow_partial:
             print("Discovery parcial: no se persiste sin --allow-partial")
             print(f"missing_rounds={missing_rounds}")
-            print("persist=false")
             return rows
-        if persist and not dry_run:
+        if persist_applied:
             inserted = 0
             updated = 0
             updated_safe = 0
