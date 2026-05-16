@@ -91,6 +91,8 @@ class DiscoverMxSeasonUseCase:
     browser_renderer: object | None = None
     use_browser_fallback: bool = False
     expected_rounds: dict[str, int] = None  # type: ignore[assignment]
+    browser_max_passes: int = 3
+    liga_mx_matches_per_round: int = 9
 
     def __post_init__(self) -> None:
         if self.expected_rounds is None:
@@ -223,13 +225,18 @@ class DiscoverMxSeasonUseCase:
 
         missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in targets_by_round]
         expected_matches = 153 if competition_slug in {"clausura_mexico", "apertura_mexico"} else len(rows)
-        coverage_status = "complete" if len(targets_by_round) == rounds_expected and len(rows) == expected_matches else "partial"
+        matches_per_round_expected = self.liga_mx_matches_per_round if competition_slug in {"clausura_mexico", "apertura_mexico"} else 0
+        rounds_have_expected_size = all(
+            len(targets_by_round.get(f"JORNADA{i}", [])) == matches_per_round_expected
+            for i in range(1, rounds_expected + 1)
+        ) if matches_per_round_expected else True
+        coverage_status = "complete" if len(targets_by_round) == rounds_expected and len(rows) == expected_matches and rounds_have_expected_size else "partial"
 
         match_id_counts: dict[str, int] = {}
         for row in rows:
             match_id = str(row.get("source_match_id", ""))
             match_id_counts[match_id] = match_id_counts.get(match_id, 0) + 1
-        duplicate_source_match_ids = sorted([k for k, v in match_id_counts.items() if k and v > 1])
+        duplicate_source_match_ids = sorted(set([k for k, v in match_id_counts.items() if k and v > 1] + getattr(self, "_last_duplicate_source_match_ids", [])))
 
         strategy = next((str(r.get("strategy", "")) for r in rows if r.get("strategy")), "unknown")
         persist_allowed = coverage_status != "partial"
@@ -272,37 +279,83 @@ class DiscoverMxSeasonUseCase:
     def _discover_by_browser(self, competition_slug: str, season_key: str, competition_url: str, year: int, debug: bool = False) -> dict[str, dict[str, str]]:
         if not self.browser_renderer:
             return {}
-        discovered: dict[str, dict[str, str]] = {}
-        if hasattr(self.browser_renderer, "discover_rounds"):
-            rendered = self.browser_renderer.discover_rounds(url=competition_url, competition=competition_slug, year=year)
-        else:
-            rendered = [{"round_label": label, "matches": [], "html": html} for label, html in self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year)]
         parser_matches_by_round: dict[str, int] = {}
-        unstable_rounds: list[str] = []
+        unstable_rounds_all: set[str] = set()
+        duplicate_source_match_ids: set[str] = set()
+        per_pass_rounds: list[dict[str, list[dict[str, str]]]] = []
         rounds_attempted = 0
-        for round_result in rendered:
-            rounds_attempted += 1
-            round_label = str(round_result.get("requested_round") or round_result.get("round_label", ""))
-            diagnostics = round_result.get("diagnostics", {}) if isinstance(round_result, dict) else {}
-            if isinstance(diagnostics, dict) and diagnostics.get("status_reason") not in (None, "ok"):
-                unstable_rounds.append(self._normalize_round_label(round_label))
-                continue
-            round_matches = list(round_result.get("matches", []))
-            if not round_matches and round_result.get("html"):
-                page = self.competition_parser.parse(str(round_result.get("html")))
-                round_matches = list(page.get("matches", []))
-            parser_matches_by_round[round_label] = len(round_matches)
-            for match in round_matches:
-                source_match_id = str(match.get("source_match_id", "")).strip()
-                relative_url = str(match.get("url", "")).strip()
-                if not source_match_id or not relative_url or source_match_id in discovered:
+
+        for _ in range(max(1, int(self.browser_max_passes))):
+            if hasattr(self.browser_renderer, "discover_rounds"):
+                rendered = self.browser_renderer.discover_rounds(url=competition_url, competition=competition_slug, year=year)
+            else:
+                rendered = [{"round_label": label, "matches": [], "html": html} for label, html in self.browser_renderer.render_round_pages(url=competition_url, competition=competition_slug, year=year)]
+
+            pass_rounds: dict[str, list[dict[str, str]]] = {}
+            seen_in_pass: set[str] = set()
+            for round_result in rendered:
+                rounds_attempted += 1
+                round_label_raw = str(round_result.get("requested_round") or round_result.get("round_label", ""))
+                round_label = self._normalize_round_label(round_label_raw)
+                diagnostics = round_result.get("diagnostics", {}) if isinstance(round_result, dict) else {}
+                if isinstance(diagnostics, dict) and diagnostics.get("status_reason") not in (None, "ok"):
+                    unstable_rounds_all.add(round_label)
                     continue
-                competition_name = str(match.get("competition_name", "")).strip()
-                if competition_name and not self._is_competition_match(competition_slug, competition_name):
+                round_matches = list(round_result.get("matches", []))
+                if not round_matches and round_result.get("html"):
+                    page = self.competition_parser.parse(str(round_result.get("html")))
+                    round_matches = list(page.get("matches", []))
+                parser_matches_by_round[round_label] = len(round_matches)
+                for match in round_matches:
+                    source_match_id = str(match.get("source_match_id", "")).strip()
+                    relative_url = str(match.get("url", "")).strip()
+                    if not source_match_id or not relative_url:
+                        continue
+                    competition_name = str(match.get("competition_name", "")).strip()
+                    if competition_name and not self._is_competition_match(competition_slug, competition_name):
+                        continue
+                    if source_match_id in seen_in_pass:
+                        duplicate_source_match_ids.add(source_match_id)
+                        continue
+                    seen_in_pass.add(source_match_id)
+                    pass_rounds.setdefault(round_label, []).append({
+                        "source_match_id": source_match_id,
+                        "url": self._canonical_url(relative_url),
+                        "source_competition_slug": competition_slug,
+                        "season_key": season_key,
+                        "round_label": round_label,
+                        "strategy": "competition_rounds_browser",
+                        "source_page": competition_url,
+                    })
+            per_pass_rounds.append(pass_rounds)
+
+        consolidated_rounds: dict[str, list[dict[str, str]]] = {}
+        for pass_rounds in per_pass_rounds:
+            for round_label, matches in pass_rounds.items():
+                is_valid = len(matches) == self.liga_mx_matches_per_round if competition_slug in {"clausura_mexico", "apertura_mexico"} else bool(matches)
+                if not is_valid:
+                    unstable_rounds_all.add(round_label)
                     continue
-                discovered[source_match_id] = {"source_match_id": source_match_id, "url": self._canonical_url(relative_url), "source_competition_slug": competition_slug, "season_key": season_key, "round_label": self._normalize_round_label(round_label), "strategy": "competition_rounds_browser", "source_page": competition_url}
+                if round_label not in consolidated_rounds or len(matches) > len(consolidated_rounds[round_label]):
+                    consolidated_rounds[round_label] = matches
+
+        discovered: dict[str, dict[str, str]] = {}
+        id_to_round: dict[str, str] = {}
+        for round_label in sorted(consolidated_rounds.keys(), key=self._round_sort_key):
+            for match in consolidated_rounds[round_label]:
+                source_match_id = match["source_match_id"]
+                previous_round = id_to_round.get(source_match_id)
+                if previous_round and previous_round != round_label:
+                    duplicate_source_match_ids.add(source_match_id)
+                    unstable_rounds_all.add(previous_round)
+                    unstable_rounds_all.add(round_label)
+                    continue
+                id_to_round[source_match_id] = round_label
+                discovered[source_match_id] = match
+
         self._last_rounds_attempted = rounds_attempted
-        self._last_unstable_rounds = sorted(set([r for r in unstable_rounds if r]), key=self._round_sort_key)
+        self._last_unstable_rounds = sorted(set([r for r in unstable_rounds_all if r]), key=self._round_sort_key)
+        self._last_duplicate_source_match_ids = sorted([i for i in duplicate_source_match_ids if i])
         if debug:
             base = Path("data/snapshots/errors")
             base.mkdir(parents=True, exist_ok=True)
