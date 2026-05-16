@@ -58,12 +58,29 @@ class DiscoverMxTeamUseCase:
 
 @dataclass(frozen=True)
 class DiscoveryResult:
-    rows: list[dict[str, str]]
-    rounds_expected: int
-    rounds_detected: int
-    expected_matches: int
-    coverage_status: str
+    competition: str
+    season_key: str
+    strategy: str
+    targets_by_source_match_id: dict[str, dict[str, str]]
+    targets_by_round: dict[str, list[dict[str, str]]]
     missing_rounds: list[str]
+    duplicate_source_match_ids: list[str]
+    unstable_rounds: list[str]
+    coverage_status: str
+    expected_matches: int
+    persist_allowed: bool
+
+    @property
+    def rows(self) -> list[dict[str, str]]:
+        return list(self.targets_by_source_match_id.values())
+
+    @property
+    def rounds_detected(self) -> int:
+        return len(self.targets_by_round)
+
+    @property
+    def unique_match_ids(self) -> int:
+        return len(self.targets_by_source_match_id)
 
 
 @dataclass
@@ -93,7 +110,12 @@ class DiscoverMxSeasonUseCase:
         if fallback_to_teams and self._should_fallback(discovered) and hasattr(self.team_use_case, "execute"):
             discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams)
 
-        result = self._build_discovery_result(competition_slug=competition_slug, discovered=discovered)
+        result = self._build_discovery_result(
+            competition_slug=competition_slug,
+            season_key=season_key,
+            discovered=discovered,
+            unstable_rounds=getattr(self, "_last_unstable_rounds", []),
+        )
         rows = result.rows
         if print_urls:
             grouped: dict[str, list[str]] = {}
@@ -106,33 +128,33 @@ class DiscoverMxSeasonUseCase:
                     print(url)
 
         rounds_detected = result.rounds_detected
-        rounds_expected = result.rounds_expected
+        rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
         missing_rounds = result.missing_rounds
         expected_matches = result.expected_matches
         coverage_status = result.coverage_status
         print(f"competition={competition_slug}")
         print(f"year={year}")
         print(f"season_key={season_key}")
-        print("strategy=browser_dom_rounds")
+        print(f"strategy={result.strategy}")
         print(f"rounds_expected={rounds_expected}")
         print(f"rounds_attempted={self._last_rounds_attempted if hasattr(self, '_last_rounds_attempted') else rounds_expected}")
         print(f"rounds_detected={rounds_detected}")
         print(f"missing_rounds={missing_rounds}")
         print(f"targets_found={len(rows)}")
-        print(f"unique_match_ids={len({r['source_match_id'] for r in rows})}")
+        print(f"unique_match_ids={result.unique_match_ids}")
         print(f"coverage_status={coverage_status}")
         print(f"persist={str(persist and not dry_run).lower()}")
-        grouped_ids: dict[str, list[str]] = {}
-        for row in rows:
-            grouped_ids.setdefault(str(row["round_label"]), []).append(str(row["source_match_id"]))
+        grouped_ids: dict[str, list[str]] = {
+            round_label: [str(target["source_match_id"]) for target in targets]
+            for round_label, targets in result.targets_by_round.items()
+        }
         for label in sorted(grouped_ids.keys(), key=self._round_sort_key):
             sample = grouped_ids[label][:sample_size]
             print(f"{label} count={len(grouped_ids[label])} sample_ids={sample}")
-        duplicate_ids = sorted([match_id for match_id in {r["source_match_id"] for r in rows} if sum(1 for x in rows if x["source_match_id"] == match_id) > 1])
         print(f"targets_by_round={{{', '.join(f'{k}:{len(v)}' for k, v in sorted(grouped_ids.items(), key=lambda x: self._round_sort_key(x[0])))}}}")
         print(f"sample_ids_by_round={{{', '.join(f'{k}:{v[:sample_size]}' for k, v in sorted(grouped_ids.items(), key=lambda x: self._round_sort_key(x[0])))}}}")
-        print(f"duplicate_source_match_ids={duplicate_ids}")
-        print(f"unstable_rounds={getattr(self, '_last_unstable_rounds', [])}")
+        print(f"duplicate_source_match_ids={result.duplicate_source_match_ids}")
+        print(f"unstable_rounds={result.unstable_rounds}")
         if debug and not rows:
             debug_path = Path("data/snapshots/errors") / f"mx_season_{competition_slug}_{year}_summary.json"
             if debug_path.exists():
@@ -148,7 +170,7 @@ class DiscoverMxSeasonUseCase:
             raise RuntimeError(
                 f"Discovery incompleto para {competition_slug} {year}: rounds_detected={rounds_detected}/{rounds_expected} targets_found={len(rows)}/{expected_matches}"
             )
-        if persist and not dry_run and coverage_status == "partial" and not allow_partial:
+        if persist and not dry_run and not result.persist_allowed:
             print("Discovery parcial: no se persiste sin --allow-partial")
             print(f"missing_rounds={missing_rounds}")
             print("persist=false")
@@ -178,15 +200,47 @@ class DiscoverMxSeasonUseCase:
                 raise RuntimeError("Persist verification failed: targets were written but audit filter cannot see them")
         return rows
 
-    def _build_discovery_result(self, *, competition_slug: str, discovered: dict[str, dict[str, str]]) -> DiscoveryResult:
+    def _build_discovery_result(
+        self,
+        *,
+        competition_slug: str,
+        season_key: str,
+        discovered: dict[str, dict[str, str]],
+        unstable_rounds: list[str],
+    ) -> DiscoveryResult:
         rows = list(discovered.values())
-        detected_rounds_set = {self._normalize_round_label(str(r["round_label"])) for r in rows}
-        rounds_detected = len(detected_rounds_set)
-        rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
-        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
+        rounds_expected = self.expected_rounds.get(competition_slug, len(rows))
+        targets_by_round: dict[str, list[dict[str, str]]] = {}
+        for row in rows:
+            normalized_round = self._normalize_round_label(str(row.get("round_label", "")))
+            targets_by_round.setdefault(normalized_round, []).append(row)
+
+        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in targets_by_round]
         expected_matches = 153 if competition_slug in {"clausura_mexico", "apertura_mexico"} else len(rows)
-        coverage_status = "complete" if rounds_detected == rounds_expected and len(rows) == expected_matches else "partial"
-        return DiscoveryResult(rows=rows, rounds_expected=rounds_expected, rounds_detected=rounds_detected, expected_matches=expected_matches, coverage_status=coverage_status, missing_rounds=missing_rounds)
+        coverage_status = "complete" if len(targets_by_round) == rounds_expected and len(rows) == expected_matches else "partial"
+
+        match_id_counts: dict[str, int] = {}
+        for row in rows:
+            match_id = str(row.get("source_match_id", ""))
+            match_id_counts[match_id] = match_id_counts.get(match_id, 0) + 1
+        duplicate_source_match_ids = sorted([k for k, v in match_id_counts.items() if k and v > 1])
+
+        strategy = next((str(r.get("strategy", "")) for r in rows if r.get("strategy")), "unknown")
+        persist_allowed = coverage_status != "partial"
+
+        return DiscoveryResult(
+            competition=competition_slug,
+            season_key=season_key,
+            strategy=strategy,
+            targets_by_source_match_id=discovered,
+            targets_by_round=targets_by_round,
+            missing_rounds=missing_rounds,
+            duplicate_source_match_ids=duplicate_source_match_ids,
+            unstable_rounds=sorted(set([r for r in unstable_rounds if r]), key=self._round_sort_key),
+            coverage_status=coverage_status,
+            expected_matches=expected_matches,
+            persist_allowed=persist_allowed,
+        )
 
     def _discover_by_rounds(self, *, competition_slug: str, season_key: str, competition_url: str) -> dict[str, dict[str, str]]:
         discovered: dict[str, dict[str, str]] = {}
