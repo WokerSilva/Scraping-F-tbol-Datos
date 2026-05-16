@@ -89,14 +89,7 @@ class BrowserCompetitionRenderer:
                 raise HttpFetchError(f"Rendered page is empty. Debug snapshot: {debug}", url=url)
 
             self._dismiss_cookies(page)
-            select_selector = None
-            for selector in self.round_selectors:
-                try:
-                    page.wait_for_selector(selector, state="attached", timeout=2_500)
-                    select_selector = selector
-                    break
-                except PlaywrightTimeoutError:
-                    continue
+            select_selector = self._resolve_select_selector(page)
             has_anchors = page.locator('a[href*="/partido/"]').count() > 0
             if not select_selector and has_anchors:
                 dom = page.evaluate(
@@ -127,10 +120,25 @@ class BrowserCompetitionRenderer:
                 status_reason = "unknown"
                 while attempts < 3:
                     attempts += 1
+                    if attempts > 1:
+                        response = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                        if response is None:
+                            status_reason = "reload_failed"
+                            continue
+                        self._dismiss_cookies(page)
+                        select_selector = self._resolve_select_selector(page)
+                        if not select_selector:
+                            status_reason = "select_not_found_after_reload"
+                            continue
                     self._select_round(page=page, selector=select_selector, value=str(option.get("value", "")), label=str(option.get("label", "")), index=int(option.get("index", 0)))
                     self._wait_for_dom_change(page=page, previous_ids=previous_ids)
                     dom = self._extract_round_dom(page=page)
                     current_ids = {str(item.get("source_match_id", "")).strip() for item in dom.get("matches", []) if str(item.get("source_match_id", "")).strip()}
+                    dom_diagnostics = dom.get("diagnostics", {})
+                    dom_diagnostics["requested_round"] = requested_round
+                    dom_diagnostics["previous_round_ids"] = sorted(previous_ids)
+                    dom_diagnostics["changed_from_previous"] = bool(current_ids and current_ids != previous_ids)
+                    dom_diagnostics["match_anchor_count"] = len(current_ids)
                     if not current_ids:
                         status_reason = "empty_ids"
                         continue
@@ -138,7 +146,7 @@ class BrowserCompetitionRenderer:
                         status_reason = "same_as_previous_round"
                         continue
                     normalized_selected = self._normalize_round_label(str(dom.get("diagnostics", {}).get("selected_round_after_action", "")))
-                    if normalized_selected and normalized_selected != requested_round:
+                    if normalized_selected != requested_round:
                         status_reason = f"selected_round_mismatch:{normalized_selected}"
                         continue
                     status_reason = "ok"
@@ -162,6 +170,19 @@ class BrowserCompetitionRenderer:
         if not round_results:
             raise HttpFetchError("Browser fallback could not extract round pages", url=url)
         return round_results
+
+    def _resolve_select_selector(self, page: object) -> str | None:
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        except Exception:
+            return None
+        for selector in self.round_selectors:
+            try:
+                page.wait_for_selector(selector, state="attached", timeout=2_500)
+                return selector
+            except PlaywrightTimeoutError:
+                continue
+        return None
 
     def render_round_pages(self, *, url: str, competition: str | None = None, year: int | None = None) -> list[tuple[str, str]]:
         rounds = self.discover_rounds(url=url, competition=competition, year=year)

@@ -56,6 +56,16 @@ class DiscoverMxTeamUseCase:
         return records
 
 
+@dataclass(frozen=True)
+class DiscoveryResult:
+    rows: list[dict[str, str]]
+    rounds_expected: int
+    rounds_detected: int
+    expected_matches: int
+    coverage_status: str
+    missing_rounds: list[str]
+
+
 @dataclass
 class DiscoverMxSeasonUseCase:
     team_use_case: DiscoverMxTeamUseCase
@@ -83,7 +93,8 @@ class DiscoverMxSeasonUseCase:
         if fallback_to_teams and self._should_fallback(discovered) and hasattr(self.team_use_case, "execute"):
             discovered = self._discover_by_teams(competition_slug=competition_slug, year=year, season_key=season_key, max_teams=max_teams)
 
-        rows = list(discovered.values())
+        result = self._build_discovery_result(competition_slug=competition_slug, discovered=discovered)
+        rows = result.rows
         if print_urls:
             grouped: dict[str, list[str]] = {}
             for row in rows:
@@ -94,12 +105,11 @@ class DiscoverMxSeasonUseCase:
                 for url in grouped[round_label]:
                     print(url)
 
-        detected_rounds_set = {self._normalize_round_label(str(r["round_label"])) for r in rows}
-        rounds_detected = len(detected_rounds_set)
-        rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
-        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
-        expected_matches = 153 if competition_slug in {"clausura_mexico", "apertura_mexico"} else len(rows)
-        coverage_status = "complete" if rounds_detected == rounds_expected and len(rows) == expected_matches else "partial"
+        rounds_detected = result.rounds_detected
+        rounds_expected = result.rounds_expected
+        missing_rounds = result.missing_rounds
+        expected_matches = result.expected_matches
+        coverage_status = result.coverage_status
         print(f"competition={competition_slug}")
         print(f"year={year}")
         print(f"season_key={season_key}")
@@ -167,6 +177,16 @@ class DiscoverMxSeasonUseCase:
             if (inserted + updated) > 0 and db_total == 0:
                 raise RuntimeError("Persist verification failed: targets were written but audit filter cannot see them")
         return rows
+
+    def _build_discovery_result(self, *, competition_slug: str, discovered: dict[str, dict[str, str]]) -> DiscoveryResult:
+        rows = list(discovered.values())
+        detected_rounds_set = {self._normalize_round_label(str(r["round_label"])) for r in rows}
+        rounds_detected = len(detected_rounds_set)
+        rounds_expected = self.expected_rounds.get(competition_slug, rounds_detected)
+        missing_rounds = [f"JORNADA{i}" for i in range(1, rounds_expected + 1) if f"JORNADA{i}" not in detected_rounds_set]
+        expected_matches = 153 if competition_slug in {"clausura_mexico", "apertura_mexico"} else len(rows)
+        coverage_status = "complete" if rounds_detected == rounds_expected and len(rows) == expected_matches else "partial"
+        return DiscoveryResult(rows=rows, rounds_expected=rounds_expected, rounds_detected=rounds_detected, expected_matches=expected_matches, coverage_status=coverage_status, missing_rounds=missing_rounds)
 
     def _discover_by_rounds(self, *, competition_slug: str, season_key: str, competition_url: str) -> dict[str, dict[str, str]]:
         discovered: dict[str, dict[str, str]] = {}
